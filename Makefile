@@ -12,8 +12,13 @@ LDFLAGS := -s -w \
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/outpost
 
+# Race detector requires cgo (and on Windows, a mingw-w64 gcc). Product
+# builds stay CGO_ENABLED=0; tests do not force it.
 test:
-	CGO_ENABLED=0 go test -race ./...
+	go test -race ./...
+
+test-norace:
+	go test ./...
 
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { \
