@@ -1,0 +1,32 @@
+version: 2
+project_name: outpost
+builds:
+  - main: ./cmd/outpost
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/korneza/outpost/internal/version.Version={{.Version}}
+      - -X github.com/korneza/outpost/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/korneza/outpost/internal/version.Date={{.Date}}
+archives:
+  - formats: [tar.gz]
+checksum:
+  name_template: checksums.txt
+sboms:
+  - artifacts: archive
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    output: true
+    args: [sign-blob, --yes, "--output-signature=${signature}", "--output-certificate=${certificate}", "${artifact}"]
+dockers:
+  - image_templates: ["ghcr.io/korneza/outpost:{{ .Version }}", "ghcr.io/korneza/outpost:latest"]
+    dockerfile: Dockerfile
+    use: buildx
+release:
+  draft: true
+changelog:
+  use: github
