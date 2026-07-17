@@ -1,0 +1,11 @@
+# Minimal Outpost configuration. Retries are OFF unless explicitly enabled
+# per tool below — there is deliberately no global retry setting.
+listen: "127.0.0.1:8100"
+upstreams:
+  - name: files
+    url: "http://127.0.0.1:9000/mcp"
+# tools:
+#   files.read:            # opt-in, per tool only
+#     retry:
+#       max_attempts: 3
+#       initial_backoff_ms: 100
