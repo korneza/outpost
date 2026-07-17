@@ -8,6 +8,7 @@ All notable changes to Outpost are documented here. The format follows [Keep a C
 
 - CLI skeleton: `outpost version`, `outpost serve` (stub)
 - YAML config loader with per-tool-only retry opt-in — no global retry setting exists, by design (ADR-0004)
+- `outpost serve` is a working MCP reverse proxy: JSON-RPC 2.0 over Streamable HTTP, dual protocol-version negotiation (`MCP-Protocol-Version` header), one route per configured upstream, graceful shutdown on SIGINT/SIGTERM
 - Founding ADRs: metadata-only boundary, dual protocol support, fail-open tiers, no-default-retries / no-`tools/call`-caching
 - CI: lint, race tests, cross-compile matrix (linux/darwin × amd64/arm64), govulncheck, secret scanning, dependency-license checks
 - Release pipeline: goreleaser with signed checksums (cosign), SBOM (syft), distroless container image

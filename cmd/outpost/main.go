@@ -2,6 +2,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -14,7 +15,7 @@ Usage:
   outpost <command>
 
 Commands:
-  serve      Run the proxy (not yet implemented)
+  serve      Run the proxy
   version    Print version information
 `
 
@@ -27,8 +28,12 @@ func main() {
 	case "version":
 		fmt.Println(version.String())
 	case "serve":
-		fmt.Fprintln(os.Stderr, "outpost serve: not implemented yet — proxy core lands in the next change set")
-		os.Exit(2)
+		fs := flag.NewFlagSet("serve", flag.ExitOnError)
+		configPath := fs.String("config", "outpost.yaml", "path to Outpost config file")
+		if err := fs.Parse(os.Args[2:]); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(runServe(*configPath, os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintf(os.Stderr, "outpost: unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(2)
