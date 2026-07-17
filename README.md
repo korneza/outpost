@@ -42,7 +42,15 @@ We think a security tool should be explicit about its boundaries:
 
 ## Quickstart
 
-Lands with `v0.9.0`. Until then: `go build ./cmd/outpost` gives you the CLI skeleton, and [`example.outpost.yaml`](example.outpost.yaml) shows the config shape.
+```bash
+go build -o outpost ./cmd/outpost
+cp example.outpost.yaml outpost.yaml   # edit the upstream URL(s) to match your MCP servers
+./outpost serve -config outpost.yaml
+```
+
+Outpost listens on the configured address and exposes one route per upstream, at `/{upstream-name}`. Point your MCP client at `http://<listen-addr>/<upstream-name>` instead of the upstream directly.
+
+This is pre-`v0.9.0` — structural validation, drift detection, pinning, circuit breaking, and anomaly detection aren't wired in yet. Today's binary proxies and negotiates protocol version; it doesn't yet inspect or protect.
 
 ## Contributing
 
