@@ -1,0 +1,6 @@
+/outpost
+/outpost.exe
+/dist/
+/coverage.out
+*.test
+.DS_Store
