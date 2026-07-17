@@ -22,6 +22,11 @@ signs:
     artifacts: checksum
     output: true
     args: [sign-blob, --yes, "--output-signature=${signature}", "--output-certificate=${certificate}", "${artifact}"]
+docker_signs:
+  - cmd: cosign
+    artifacts: images
+    output: true
+    args: [sign, --yes, "${artifact}"]
 dockers:
   - image_templates: ["ghcr.io/korneza/outpost:{{ .Version }}", "ghcr.io/korneza/outpost:latest"]
     dockerfile: Dockerfile
