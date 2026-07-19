@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
@@ -340,5 +341,52 @@ func TestServeEndToEndRugPullSimulation(t *testing.T) {
 	}
 	if toolsCallCount != 1 {
 		t.Fatalf("upstream saw %d tools/call requests after the block, want still 1 — the post-rug-pull call must never reach upstream", toolsCallCount)
+	}
+}
+
+func TestServeEndToEndDetectsLatencyAnomaly(t *testing.T) {
+	var callNum int
+	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req mcp.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == mcp.MethodToolsList {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+			return
+		}
+		callNum++
+		if callNum > 25 {
+			time.Sleep(50 * time.Millisecond)
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"content":"ok"}}`))
+	}))
+	defer fakeUpstream.Close()
+
+	cfg := &config.Config{
+		Listen:    "127.0.0.1:0",
+		StateDB:   filepath.Join(t.TempDir(), "outpost.db"),
+		Upstreams: []config.Upstream{{Name: "files", URL: fakeUpstream.URL}},
+	}
+	var logBuf bytes.Buffer
+	handler, st, err := proxyNewForTest(cfg, &logBuf)
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	for i := 0; i < 26; i++ {
+		resp, err := http.Post(srv.URL+"/files", "application/json", strings.NewReader(
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"files.read","arguments":{}}}`,
+		))
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		resp.Body.Close()
+	}
+
+	if !strings.Contains(logBuf.String(), "statistical anomaly detected") {
+		t.Fatalf("expected a statistical anomaly log entry after the 26th (slow) call over the real listener; log = %s", logBuf.String())
 	}
 }
