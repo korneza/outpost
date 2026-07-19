@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
@@ -401,5 +402,36 @@ func TestProxyBlocksToolCallWhenDriftedAndBlockConfigured(t *testing.T) {
 	}
 	if toolsCallReached {
 		t.Fatal("upstream saw the tools/call — a block:true tool with active drift must be rejected before reaching upstream")
+	}
+}
+
+func TestProxyLogsAnomalyForLatencyOutlier(t *testing.T) {
+	callNum := 0
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		if req.Method == mcp.MethodToolsList {
+			return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"tools":[]}`)}
+		}
+		callNum++
+		if callNum > 25 {
+			time.Sleep(50 * time.Millisecond) // a real, measurable latency outlier
+		}
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"ok"}`)}
+	})
+	defer up.Close()
+
+	handler, logBuf := newTestProxy(t, up.URL)
+	call := func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"files.read","arguments":{}}}`,
+		))
+		handler.ServeHTTP(rec, req)
+	}
+	for i := 0; i < 26; i++ {
+		call()
+	}
+
+	if !strings.Contains(logBuf.String(), "anomaly") {
+		t.Fatalf("expected an anomaly log entry after a 50ms call against a near-zero baseline; log = %s", logBuf.String())
 	}
 }

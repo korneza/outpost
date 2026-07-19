@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/korneza/outpost/internal/anomaly"
 	"github.com/korneza/outpost/internal/breaker"
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
@@ -38,6 +39,7 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler
 			t1:      t1.New(),
 			breaker: breaker.New(st, breaker.DefaultConfig()),
 			pinning: pinning.New(st),
+			anomaly: anomaly.New(),
 			tools:   cfg.Tools,
 		}
 		mux.Handle("/"+u.Name, h)
@@ -52,6 +54,7 @@ type upstreamHandler struct {
 	t1      *t1.Validator
 	breaker *breaker.Breaker
 	pinning *pinning.Pinner
+	anomaly *anomaly.Detector
 	tools   map[string]config.ToolOverride
 }
 
@@ -105,6 +108,9 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		success := callErr == nil && (resp == nil || resp.Error == nil)
 		if err := h.breaker.RecordResult(r.Context(), h.name, tool, success); err != nil {
 			h.logger.Error("breaker: failed to persist state transition", "error", err)
+		}
+		for _, a := range h.anomaly.Observe(h.name, tool, float64(duration.Milliseconds()), !success) {
+			h.logger.Warn("statistical anomaly detected", "upstream", a.Upstream, "tool", a.ToolName, "metric", a.Metric, "value", a.Value, "mean", a.Mean, "stddev", a.StdDev)
 		}
 	}
 
