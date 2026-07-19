@@ -18,3 +18,4 @@ All notable changes to Outpost are documented here. The format follows [Keep a C
 - Fuzz testing for the JSON-RPC parser and schema validator (zero crashes across 5.9M+ combined executions); recursion-depth guard on schema validation against maliciously nested tool schemas
 - Per-tool circuit breaker on `tools/call`: consecutive-failure tripping, cooldown, half-open trial, `CircuitOpen` (-32001) rejection before the upstream is attempted
 - `state_db` config option (default `outpost.db`) for the shared SQLite state store
+- Tool-definition pinning and drift detection: SHA-256 hash of the entire tool definition (not just inputSchema) on first sight; drift is logged, and blocks `tools/call` when `block: true` is configured (`DriftBlocked`, -32002)

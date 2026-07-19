@@ -17,8 +17,8 @@ If you run MCP agents in production today, three failure modes are waiting for y
 - **Structural validation (T1)** — synchronous, sub-millisecond schema checks on every `tools/call`, learned automatically from the upstream's own `tools/list` responses. Fail-open: a tool Outpost hasn't seen yet is never blocked. No LLM in the request path, ever.
 - **Circuit breaking** — per-tool `tools/call` failure tripping (5 consecutive failures by default), a cooldown, then a single trial call before fully re-closing. In-memory hot path; state transitions persisted for crash visibility.
 - **List-operation caching** — in-process cache for `tools/list` and `resources/read`, honouring the spec's `cacheScope`. Explicitly **not** `tools/call`.
-- **Schema-drift detection** — diffs tool definitions across calls and flags changes.
-- **Tool-definition pinning** — SHA-256 hash of every tool definition on first sight; alert (optionally block) on an unexplained change.
+- **Schema-drift detection** — diffs a tool's *entire* definition (not just its schema) across `tools/list` calls, so a poisoned-description attack that leaves `inputSchema` untouched still gets caught.
+- **Tool-definition pinning** — SHA-256 hash of every tool definition on first sight (trust-on-first-use); drift is always logged, and blocks `tools/call` to that tool when `block: true` is configured for it.
 - **Statistical anomaly detection (T2)** — streaming statistics (t-digest, EWMA) on per-tool latency, error rate, argument shape, and call frequency. No machine learning, no LLM.
 - **OpenTelemetry export** — native trace export using the MCP spec's `_meta` trace fields.
 
@@ -50,7 +50,7 @@ cp example.outpost.yaml outpost.yaml   # edit the upstream URL(s) to match your 
 
 Outpost listens on the configured address and exposes one route per upstream, at `/{upstream-name}`. Point your MCP client at `http://<listen-addr>/<upstream-name>` instead of the upstream directly.
 
-This is pre-`v0.9.0` — drift detection, pinning, circuit breaking, and anomaly detection aren't wired in yet. Today's binary proxies, negotiates protocol version, and structurally validates `tools/call` arguments against schemas it's learned; it doesn't yet detect tampering or anomalies.
+This is pre-`v0.9.0` — list-op caching and statistical anomaly detection aren't wired in yet. Today's binary proxies, negotiates protocol version, structurally validates `tools/call` arguments, trips a circuit breaker on repeated tool failures, and detects (and optionally blocks) tool-definition drift.
 
 ## Contributing
 
