@@ -15,7 +15,7 @@ If you run MCP agents in production today, three failure modes are waiting for y
 ## What Outpost does
 
 - **Structural validation (T1)** — synchronous, sub-millisecond schema checks on every `tools/call`, learned automatically from the upstream's own `tools/list` responses. Fail-open: a tool Outpost hasn't seen yet is never blocked. No LLM in the request path, ever.
-- **Circuit breaking** — per-tool failure-rate tripping with deterministic thresholds.
+- **Circuit breaking** — per-tool `tools/call` failure tripping (5 consecutive failures by default), a cooldown, then a single trial call before fully re-closing. In-memory hot path; state transitions persisted for crash visibility.
 - **List-operation caching** — in-process cache for `tools/list` and `resources/read`, honouring the spec's `cacheScope`. Explicitly **not** `tools/call`.
 - **Schema-drift detection** — diffs tool definitions across calls and flags changes.
 - **Tool-definition pinning** — SHA-256 hash of every tool definition on first sight; alert (optionally block) on an unexplained change.
