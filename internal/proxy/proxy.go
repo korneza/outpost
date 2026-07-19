@@ -16,6 +16,7 @@ import (
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/mcp"
+	"github.com/korneza/outpost/internal/pinning"
 	"github.com/korneza/outpost/internal/store"
 	"github.com/korneza/outpost/internal/t1"
 	"github.com/korneza/outpost/internal/upstream"
@@ -23,7 +24,7 @@ import (
 
 // New builds the proxy's HTTP handler from cfg: one route per configured
 // upstream, at path "/{upstream.Name}". st backs each upstream's circuit
-// breaker for state-transition persistence.
+// breaker and pinning state for persistence.
 func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler, error) {
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("proxy: at least one upstream is required")
@@ -36,6 +37,8 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler
 			logger:  logger,
 			t1:      t1.New(),
 			breaker: breaker.New(st, breaker.DefaultConfig()),
+			pinning: pinning.New(st),
+			tools:   cfg.Tools,
 		}
 		mux.Handle("/"+u.Name, h)
 	}
@@ -48,6 +51,8 @@ type upstreamHandler struct {
 	logger  *slog.Logger
 	t1      *t1.Validator
 	breaker *breaker.Breaker
+	pinning *pinning.Pinner
+	tools   map[string]config.ToolOverride
 }
 
 func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +84,11 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.CircuitOpen, "circuit breaker open for this tool"))
 			return
 		}
+		if h.pinning.IsDrifted(h.name, tool) && h.tools[tool].Block {
+			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("blocked: tool definition drift detected"))
+			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.DriftBlocked, "tool definition changed since it was pinned; blocked per configuration"))
+			return
+		}
 		if violation := h.t1.Check(tool, &req); violation != "" {
 			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("t1 rejected: %s", violation))
 			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.InvalidParams, violation))
@@ -100,6 +110,13 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if callErr == nil && req.Method == mcp.MethodToolsList {
 		h.t1.LearnFromToolsList(resp)
+		if alerts, err := h.pinning.LearnFromToolsList(r.Context(), h.name, resp); err != nil {
+			h.logger.Error("pinning: failed to process tools/list", "error", err)
+		} else {
+			for _, a := range alerts {
+				h.logger.Error("tool definition drift detected", "upstream", a.Upstream, "tool", a.ToolName, "old_hash", a.OldHash, "new_hash", a.NewHash)
+			}
+		}
 	}
 
 	if callErr != nil {

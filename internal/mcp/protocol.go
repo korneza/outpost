@@ -22,7 +22,8 @@ const (
 // Outpost-specific error codes, in the JSON-RPC 2.0 reserved "server
 // error" range (-32000 to -32099).
 const (
-	CircuitOpen = -32001
+	CircuitOpen  = -32001
+	DriftBlocked = -32002
 )
 
 // ProtocolVersion identifies which MCP protocol revision a message is
