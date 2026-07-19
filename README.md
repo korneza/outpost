@@ -19,7 +19,7 @@ If you run MCP agents in production today, three failure modes are waiting for y
 - **List-operation caching** — in-process cache for `tools/list` and `resources/read`, honouring the spec's `cacheScope`. Explicitly **not** `tools/call`.
 - **Schema-drift detection** — diffs a tool's *entire* definition (not just its schema) across `tools/list` calls, so a poisoned-description attack that leaves `inputSchema` untouched still gets caught.
 - **Tool-definition pinning** — SHA-256 hash of every tool definition on first sight (trust-on-first-use); drift is always logged, and blocks `tools/call` to that tool when `block: true` is configured for it.
-- **Statistical anomaly detection (T2)** — streaming statistics (t-digest, EWMA) on per-tool latency, error rate, argument shape, and call frequency. No machine learning, no LLM.
+- **Statistical anomaly detection (T2)** — Welford's online algorithm on per-tool `tools/call` latency and error rate; flags calls more than 3 standard deviations from that tool's own history (with a zero-variance special case for the first failure after a clean streak). Detection only — never blocks. No machine learning, no LLM.
 - **OpenTelemetry export** — native trace export using the MCP spec's `_meta` trace fields.
 
 Both MCP protocol versions `2025-11-25` and `2026-07-28` are supported concurrently.
@@ -50,7 +50,7 @@ cp example.outpost.yaml outpost.yaml   # edit the upstream URL(s) to match your 
 
 Outpost listens on the configured address and exposes one route per upstream, at `/{upstream-name}`. Point your MCP client at `http://<listen-addr>/<upstream-name>` instead of the upstream directly.
 
-This is pre-`v0.9.0` — list-op caching and statistical anomaly detection aren't wired in yet. Today's binary proxies, negotiates protocol version, structurally validates `tools/call` arguments, trips a circuit breaker on repeated tool failures, and detects (and optionally blocks) tool-definition drift.
+This is pre-`v0.9.0` — list-op caching isn't wired in yet. Today's binary proxies, negotiates protocol version, structurally validates `tools/call` arguments, trips a circuit breaker on repeated tool failures, detects (and optionally blocks) tool-definition drift, and flags statistical anomalies in latency and error rate.
 
 ## Contributing
 
