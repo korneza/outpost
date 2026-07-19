@@ -55,3 +55,32 @@ func (s *Store) ListDrift(ctx context.Context, upstream, toolName string) ([]Dri
 	}
 	return events, rows.Err()
 }
+
+// DriftedTool identifies an (Upstream, ToolName) pair that has at least
+// one recorded drift event.
+type DriftedTool struct {
+	Upstream string
+	ToolName string
+}
+
+// ListDriftedTools returns every distinct (upstream, tool) pair with at
+// least one recorded drift event — used to rebuild in-memory block state
+// after a restart, since that state is not itself persisted (only the
+// drift log is).
+func (s *Store) ListDriftedTools(ctx context.Context) ([]DriftedTool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT upstream, tool_name FROM drift_events`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list drifted tools: %w", err)
+	}
+	defer rows.Close()
+
+	var tools []DriftedTool
+	for rows.Next() {
+		var dt DriftedTool
+		if err := rows.Scan(&dt.Upstream, &dt.ToolName); err != nil {
+			return nil, fmt.Errorf("store: scan drifted tool: %w", err)
+		}
+		tools = append(tools, dt)
+	}
+	return tools, rows.Err()
+}
