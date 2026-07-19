@@ -12,26 +12,30 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/korneza/outpost/internal/breaker"
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/mcp"
+	"github.com/korneza/outpost/internal/store"
 	"github.com/korneza/outpost/internal/t1"
 	"github.com/korneza/outpost/internal/upstream"
 )
 
 // New builds the proxy's HTTP handler from cfg: one route per configured
-// upstream, at path "/{upstream.Name}".
-func New(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
+// upstream, at path "/{upstream.Name}". st backs each upstream's circuit
+// breaker for state-transition persistence.
+func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler, error) {
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("proxy: at least one upstream is required")
 	}
 	mux := http.NewServeMux()
 	for _, u := range cfg.Upstreams {
 		h := &upstreamHandler{
-			name:   u.Name,
-			client: upstream.NewClient(u.URL),
-			logger: logger,
-			t1:     t1.New(),
+			name:    u.Name,
+			client:  upstream.NewClient(u.URL),
+			logger:  logger,
+			t1:      t1.New(),
+			breaker: breaker.New(st, breaker.DefaultConfig()),
 		}
 		mux.Handle("/"+u.Name, h)
 	}
@@ -39,10 +43,11 @@ func New(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 }
 
 type upstreamHandler struct {
-	name   string
-	client *upstream.Client
-	logger *slog.Logger
-	t1     *t1.Validator
+	name    string
+	client  *upstream.Client
+	logger  *slog.Logger
+	t1      *t1.Validator
+	breaker *breaker.Breaker
 }
 
 func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +74,11 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(mcp.ProtocolVersionHeader, string(version))
 
 	if req.Method == mcp.MethodToolsCall {
+		if !h.breaker.Allow(h.name, tool) {
+			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("circuit breaker open"))
+			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.CircuitOpen, "circuit breaker open for this tool"))
+			return
+		}
 		if violation := h.t1.Check(tool, &req); violation != "" {
 			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("t1 rejected: %s", violation))
 			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.InvalidParams, violation))
@@ -80,6 +90,13 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, callErr := h.client.Call(r.Context(), version, &req)
 	duration := time.Since(start)
 	logging.LogCall(h.logger, h.name, req.Method, tool, duration, callErr)
+
+	if req.Method == mcp.MethodToolsCall {
+		success := callErr == nil && (resp == nil || resp.Error == nil)
+		if err := h.breaker.RecordResult(r.Context(), h.name, tool, success); err != nil {
+			h.logger.Error("breaker: failed to persist state transition", "error", err)
+		}
+	}
 
 	if callErr == nil && req.Method == mcp.MethodToolsList {
 		h.t1.LearnFromToolsList(resp)

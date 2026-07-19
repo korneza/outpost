@@ -19,12 +19,14 @@ import (
 func TestNewServerUsesConfiguredListenAddress(t *testing.T) {
 	cfg := &config.Config{
 		Listen:    "127.0.0.1:8123",
+		StateDB:   filepath.Join(t.TempDir(), "outpost.db"),
 		Upstreams: []config.Upstream{{Name: "files", URL: "http://127.0.0.1:9999/mcp"}},
 	}
-	srv, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard))
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
+	defer st.Close()
 	if srv.Addr != "127.0.0.1:8123" {
 		t.Fatalf("Addr = %q, want %q", srv.Addr, "127.0.0.1:8123")
 	}
@@ -34,8 +36,8 @@ func TestNewServerUsesConfiguredListenAddress(t *testing.T) {
 }
 
 func TestNewServerRejectsConfigWithNoUpstreams(t *testing.T) {
-	cfg := &config.Config{Listen: "127.0.0.1:8123"}
-	if _, err := newServer(cfg, logging.New(io.Discard)); err == nil {
+	cfg := &config.Config{Listen: "127.0.0.1:8123", StateDB: filepath.Join(t.TempDir(), "outpost.db")}
+	if _, _, err := newServer(cfg, logging.New(io.Discard)); err == nil {
 		t.Fatal("expected an error building a server with no upstreams")
 	}
 }
@@ -66,7 +68,7 @@ func TestServeEndToEndOverRealListener(t *testing.T) {
 	defer fakeUpstream.Close()
 
 	configPath := filepath.Join(t.TempDir(), "outpost.yaml")
-	configYAML := "listen: \"127.0.0.1:0\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
+	configYAML := "listen: \"127.0.0.1:0\"\nstate_db: \"" + filepath.ToSlash(filepath.Join(t.TempDir(), "outpost.db")) + "\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -75,10 +77,11 @@ func TestServeEndToEndOverRealListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	srv, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard))
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
+	defer st.Close()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -123,7 +126,7 @@ func TestServeEndToEndRejectsInvalidToolCall(t *testing.T) {
 	defer fakeUpstream.Close()
 
 	configPath := filepath.Join(t.TempDir(), "outpost.yaml")
-	configYAML := "listen: \"127.0.0.1:0\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
+	configYAML := "listen: \"127.0.0.1:0\"\nstate_db: \"" + filepath.ToSlash(filepath.Join(t.TempDir(), "outpost.db")) + "\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +134,11 @@ func TestServeEndToEndRejectsInvalidToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	srv, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard))
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
+	defer st.Close()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

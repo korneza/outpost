@@ -11,6 +11,7 @@ import (
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/mcp"
+	"github.com/korneza/outpost/internal/store"
 )
 
 func fakeUpstream(t *testing.T, respond func(mcp.Request) mcp.Response) *httptest.Server {
@@ -32,8 +33,13 @@ func newTestProxy(t *testing.T, upstreamURL string) (http.Handler, *bytes.Buffer
 		Listen:    "127.0.0.1:0",
 		Upstreams: []config.Upstream{{Name: "files", URL: upstreamURL}},
 	}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
 	var logBuf bytes.Buffer
-	handler, err := New(cfg, logging.New(&logBuf))
+	handler, err := New(cfg, logging.New(&logBuf), st)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -256,5 +262,40 @@ func TestProxyStillForwardsToolCallForUnlearnedTool(t *testing.T) {
 	}
 	if resp.Error != nil {
 		t.Fatalf("unexpected error for an unlearned tool: %+v — T1 must fail open", resp.Error)
+	}
+}
+
+func TestProxyOpensCircuitAfterConsecutiveFailures(t *testing.T) {
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		if req.Method == mcp.MethodToolsList {
+			return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"tools":[]}`)}
+		}
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Error: &mcp.Error{Code: mcp.InternalError, Message: "upstream is broken"}}
+	})
+	defer up.Close()
+
+	handler, _ := newTestProxy(t, up.URL)
+
+	for i := 0; i < 5; i++ { // default threshold
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"broken.tool","arguments":{}}}`,
+		))
+		handler.ServeHTTP(rec, req)
+	}
+
+	// One more call: the breaker must now be open, rejecting before the
+	// (still-broken, but that's not the point) upstream is even reached.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"broken.tool","arguments":{}}}`,
+	))
+	handler.ServeHTTP(rec, req)
+	var resp mcp.Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != mcp.CircuitOpen {
+		t.Fatalf("Error = %+v, want code %d (CircuitOpen)", resp.Error, mcp.CircuitOpen)
 	}
 }

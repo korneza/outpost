@@ -13,22 +13,29 @@ import (
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/proxy"
+	"github.com/korneza/outpost/internal/store"
 	"github.com/korneza/outpost/internal/version"
 )
 
 // newServer builds the HTTP server that will run the proxy, from a loaded
 // config. It does not start listening — callers decide how to run and shut
-// it down.
-func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
-	handler, err := proxy.New(cfg, logger)
+// it down. The returned *store.Store is the caller's to close; it opens
+// cfg.StateDB but does not own its lifecycle beyond that.
+func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, *store.Store, error) {
+	st, err := store.Open(cfg.StateDB)
 	if err != nil {
-		return nil, fmt.Errorf("build proxy: %w", err)
+		return nil, nil, fmt.Errorf("open state db: %w", err)
+	}
+	handler, err := proxy.New(cfg, logger, st)
+	if err != nil {
+		st.Close()
+		return nil, nil, fmt.Errorf("build proxy: %w", err)
 	}
 	return &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-	}, nil
+	}, st, nil
 }
 
 // runServe loads configPath, starts the proxy server, and blocks until an
@@ -43,11 +50,12 @@ func runServe(configPath string, stdout, stderr *os.File) int {
 		return 1
 	}
 
-	srv, err := newServer(cfg, logger)
+	srv, st, err := newServer(cfg, logger)
 	if err != nil {
 		fmt.Fprintf(stderr, "outpost serve: %v\n", err)
 		return 1
 	}
+	defer st.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

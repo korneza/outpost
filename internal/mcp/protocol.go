@@ -19,6 +19,12 @@ const (
 	InternalError  = -32603
 )
 
+// Outpost-specific error codes, in the JSON-RPC 2.0 reserved "server
+// error" range (-32000 to -32099).
+const (
+	CircuitOpen = -32001
+)
+
 // ProtocolVersion identifies which MCP protocol revision a message is
 // negotiated for. See ADR-0002 for why both are supported concurrently.
 type ProtocolVersion string

@@ -19,6 +19,31 @@ func TestConfigHasNoGlobalRetryField(t *testing.T) {
 	}
 }
 
+func TestStateDBDefaultsWhenUnset(t *testing.T) {
+	cfg := writeAndLoad(t, `
+listen: "127.0.0.1:8100"
+upstreams:
+  - name: files
+    url: "http://127.0.0.1:9000/mcp"
+`)
+	if cfg.StateDB != "outpost.db" {
+		t.Fatalf("StateDB = %q, want default %q", cfg.StateDB, "outpost.db")
+	}
+}
+
+func TestStateDBHonoursExplicitValue(t *testing.T) {
+	cfg := writeAndLoad(t, `
+listen: "127.0.0.1:8100"
+state_db: "/var/lib/outpost/state.db"
+upstreams:
+  - name: files
+    url: "http://127.0.0.1:9000/mcp"
+`)
+	if cfg.StateDB != "/var/lib/outpost/state.db" {
+		t.Fatalf("StateDB = %q, want %q", cfg.StateDB, "/var/lib/outpost/state.db")
+	}
+}
+
 func TestRetriesDisabledByDefault(t *testing.T) {
 	cfg := writeAndLoad(t, `
 listen: "127.0.0.1:8100"

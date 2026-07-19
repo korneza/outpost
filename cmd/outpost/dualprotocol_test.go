@@ -43,7 +43,7 @@ func TestServeSupportsBothProtocolVersionsEndToEnd(t *testing.T) {
 	defer fakeUpstream.Close()
 
 	configPath := filepath.Join(t.TempDir(), "outpost.yaml")
-	configYAML := "listen: \"127.0.0.1:0\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
+	configYAML := "listen: \"127.0.0.1:0\"\nstate_db: \"" + filepath.ToSlash(filepath.Join(t.TempDir(), "outpost.db")) + "\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -51,10 +51,11 @@ func TestServeSupportsBothProtocolVersionsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	srv, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard))
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
+	defer st.Close()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

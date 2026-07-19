@@ -14,6 +14,7 @@ import (
 
 type Config struct {
 	Listen    string                  `yaml:"listen"`
+	StateDB   string                  `yaml:"state_db"`
 	Upstreams []Upstream              `yaml:"upstreams"`
 	Tools     map[string]ToolOverride `yaml:"tools"`
 }
@@ -41,6 +42,9 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.StateDB == "" {
+		cfg.StateDB = "outpost.db"
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
