@@ -177,3 +177,72 @@ func TestServeEndToEndRejectsInvalidToolCall(t *testing.T) {
 		t.Fatalf("upstream saw %d tools/call requests over the real listener, want 0", toolsCallCount)
 	}
 }
+
+func TestServeEndToEndTripsBreakerAfterConsecutiveFailures(t *testing.T) {
+	var callCount int
+	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req mcp.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == mcp.MethodToolsList {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+			return
+		}
+		callCount++
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"boom"}}`))
+	}))
+	defer fakeUpstream.Close()
+
+	configPath := filepath.Join(t.TempDir(), "outpost.yaml")
+	configYAML := "listen: \"127.0.0.1:0\"\nstate_db: \"" + filepath.ToSlash(filepath.Join(t.TempDir(), "outpost.db")) + "\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	srv, st, err := newServer(cfg, logging.New(io.Discard))
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	defer st.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	base := "http://" + ln.Addr().String() + "/files"
+	call := func() *mcp.Response {
+		resp, err := http.Post(base, "application/json", strings.NewReader(
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"broken.tool","arguments":{}}}`,
+		))
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		var decoded mcp.Response
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, data)
+		}
+		return &decoded
+	}
+
+	for i := 0; i < 5; i++ { // default threshold
+		call()
+	}
+	if callCount != 5 {
+		t.Fatalf("upstream saw %d calls after 5 failing attempts, want 5", callCount)
+	}
+
+	tripped := call()
+	if tripped.Error == nil || tripped.Error.Code != mcp.CircuitOpen {
+		t.Fatalf("6th call: Error = %+v, want code %d (CircuitOpen)", tripped.Error, mcp.CircuitOpen)
+	}
+	if callCount != 5 {
+		t.Fatalf("upstream saw %d calls after the breaker tripped, want still 5 — the 6th must be rejected before reaching upstream", callCount)
+	}
+}
