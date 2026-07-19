@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -468,4 +470,72 @@ func fakeUpstreamRaw(t *testing.T, respond func(*http.Request) mcp.Response) *ht
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
+}
+
+func TestProxyRestoresDriftBlockOnStartupWithoutFreshToolsList(t *testing.T) {
+	// Simulates a process restart: drift is already recorded in the store
+	// from a *previous* process's lifetime (no tools/list happens in this
+	// test at all), and a brand-new proxy.New(...) — as outpost serve
+	// calls on every startup — must block the tool immediately, not only
+	// after a fresh tools/list happens to re-detect the same drift.
+	var toolsCallReached bool
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		toolsCallReached = true
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"should not be reached"}`)}
+	})
+	defer up.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "outpost.db")
+	seedStore, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open (seed): %v", err)
+	}
+	ctx := context.Background()
+	if _, err := seedStore.CreatePinIfAbsent(ctx, store.ToolPin{
+		Upstream: "files", ToolName: "files.read", SchemaHash: "original-hash", FirstSeen: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed pin: %v", err)
+	}
+	if err := seedStore.RecordDrift(ctx, store.DriftEvent{
+		Upstream: "files", ToolName: "files.read", OldHash: "original-hash", NewHash: "poisoned-hash", DetectedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed drift: %v", err)
+	}
+	if err := seedStore.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	// The "restart": a brand-new store handle and a brand-new proxy.New
+	// call against the same on-disk file — no tools/list call anywhere.
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open (post-restart): %v", err)
+	}
+	defer st.Close()
+	cfg := &config.Config{
+		Listen:    "127.0.0.1:0",
+		Upstreams: []config.Upstream{{Name: "files", URL: up.URL}},
+		Tools:     map[string]config.ToolOverride{"files.read": {Block: true}},
+	}
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"files.read","arguments":{"path":"/tmp/x"}}}`,
+	))
+	handler.ServeHTTP(rec, req)
+
+	var resp mcp.Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != mcp.DriftBlocked {
+		t.Fatalf("Error = %+v, want code %d (DriftBlocked) — block state must survive a restart", resp.Error, mcp.DriftBlocked)
+	}
+	if toolsCallReached {
+		t.Fatal("upstream saw the call — restart must not silently lift a drift block")
+	}
 }

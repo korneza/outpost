@@ -5,6 +5,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,13 +33,22 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler
 	}
 	mux := http.NewServeMux()
 	for _, u := range cfg.Upstreams {
+		p := pinning.New(st)
+		// Restore drift-block state from persisted history — otherwise a
+		// restart silently un-blocks a previously drifted tool. A
+		// hydration failure is fail-open (logged, not fatal): it leaves
+		// block state as if no drift had ever been seen, same as before
+		// this method existed, rather than refusing to start the proxy.
+		if err := p.Hydrate(context.Background()); err != nil {
+			logger.Error("pinning: failed to hydrate drift state from store", "upstream", u.Name, "error", err)
+		}
 		h := &upstreamHandler{
 			name:    u.Name,
 			client:  upstream.NewClient(u.URL),
 			logger:  logger,
 			t1:      t1.New(),
 			breaker: breaker.New(st, breaker.DefaultConfig()),
-			pinning: pinning.New(st),
+			pinning: p,
 			anomaly: anomaly.New(),
 			tools:   cfg.Tools,
 		}
