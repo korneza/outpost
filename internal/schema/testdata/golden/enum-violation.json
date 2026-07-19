@@ -1,0 +1,1 @@
+{"schema":{"type":"object","properties":{"mode":{"type":"string","enum":["read","write"]}},"required":["mode"]},"arguments":{"mode":"delete"},"valid":false}

@@ -1,0 +1,1 @@
+{"schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false},"arguments":{"path":"/tmp/x","evil_extra_field":"payload"},"valid":false}

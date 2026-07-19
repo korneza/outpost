@@ -1,0 +1,1 @@
+{"schema":{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}},"required":["items"]},"arguments":{"items":[{"id":"a"},{"id":"b"}]},"valid":true}
