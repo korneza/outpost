@@ -31,18 +31,30 @@ func Parse(raw json.RawMessage) (*Schema, error) {
 	return &s, nil
 }
 
+// maxValidationDepth bounds Validate's recursion into nested
+// properties/items. Tool schemas are learned from an upstream server's own
+// tools/list response — exactly the input a malicious or compromised
+// upstream controls (the tool-poisoning threat model this product exists
+// to defend against) — so unbounded recursion here is attacker-reachable,
+// not just a theoretical concern.
+const maxValidationDepth = 100
+
 // Validate checks value (already JSON-decoded: map[string]any, []any,
 // string, float64, bool, or nil) against s, returning a *ValidationError
 // describing every violation found, or nil if value is valid.
 func (s *Schema) Validate(value any) error {
-	violations := s.validate(value, "$")
+	violations := s.validate(value, "$", 0)
 	if len(violations) == 0 {
 		return nil
 	}
 	return &ValidationError{Violations: violations}
 }
 
-func (s *Schema) validate(value any, path string) []string {
+func (s *Schema) validate(value any, path string, depth int) []string {
+	if depth > maxValidationDepth {
+		return []string{fmt.Sprintf("%s: exceeded maximum validation depth (%d)", path, maxValidationDepth)}
+	}
+
 	var violations []string
 
 	if s.Type != "" && !typeMatches(s.Type, value) {
@@ -58,7 +70,7 @@ func (s *Schema) validate(value any, path string) []string {
 		}
 		for key, val := range v {
 			if propSchema, ok := s.Properties[key]; ok {
-				violations = append(violations, propSchema.validate(val, path+"."+key)...)
+				violations = append(violations, propSchema.validate(val, path+"."+key, depth+1)...)
 			} else if s.AdditionalProperties != nil && !*s.AdditionalProperties {
 				violations = append(violations, fmt.Sprintf("%s: additional property %q is not allowed", path, key))
 			}
@@ -66,7 +78,7 @@ func (s *Schema) validate(value any, path string) []string {
 	case []any:
 		if s.Items != nil {
 			for i, item := range v {
-				violations = append(violations, s.Items.validate(item, fmt.Sprintf("%s[%d]", path, i))...)
+				violations = append(violations, s.Items.validate(item, fmt.Sprintf("%s[%d]", path, i), depth+1)...)
 			}
 		}
 	}
