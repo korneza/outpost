@@ -435,3 +435,37 @@ func TestProxyLogsAnomalyForLatencyOutlier(t *testing.T) {
 		t.Fatalf("expected an anomaly log entry after a 50ms call against a near-zero baseline; log = %s", logBuf.String())
 	}
 }
+
+func TestProxyForwardsAuthorizationHeaderToUpstream(t *testing.T) {
+	var gotAuth string
+	up := fakeUpstreamRaw(t, func(r *http.Request) mcp.Response {
+		gotAuth = r.Header.Get("Authorization")
+		var req mcp.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"ok"}`)}
+	})
+	defer up.Close()
+
+	handler, _ := newTestProxy(t, up.URL)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"files.read","arguments":{}}}`,
+	))
+	req.Header.Set("Authorization", "Bearer client-supplied-opaque-token")
+	handler.ServeHTTP(rec, req)
+
+	if gotAuth != "Bearer client-supplied-opaque-token" {
+		t.Fatalf("upstream saw Authorization = %q, want %q — Outpost forwards opaque bearer tokens", gotAuth, "Bearer client-supplied-opaque-token")
+	}
+}
+
+// fakeUpstreamRaw is like fakeUpstream but exposes the raw *http.Request so
+// tests can inspect headers the plain fakeUpstream helper doesn't surface.
+func fakeUpstreamRaw(t *testing.T, respond func(*http.Request) mcp.Response) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := respond(r)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+}

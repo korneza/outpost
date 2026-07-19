@@ -100,7 +100,7 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	resp, callErr := h.client.Call(r.Context(), version, &req)
+	resp, callErr := h.client.Call(r.Context(), version, &req, r.Header.Get("Authorization"))
 	duration := time.Since(start)
 	logging.LogCall(h.logger, h.name, req.Method, tool, duration, callErr)
 

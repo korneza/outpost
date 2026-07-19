@@ -23,7 +23,7 @@ func TestCallSendsAndDecodesJSONRPC(t *testing.T) {
 
 	client := NewClient(srv.URL)
 	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
-	resp, err := client.Call(context.Background(), mcp.VersionCurrent, req)
+	resp, err := client.Call(context.Background(), mcp.VersionCurrent, req, "")
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestCallSetsProtocolVersionHeader(t *testing.T) {
 
 	client := NewClient(srv.URL)
 	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
-	if _, err := client.Call(context.Background(), mcp.VersionNext, req); err != nil {
+	if _, err := client.Call(context.Background(), mcp.VersionNext, req, ""); err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 	if gotHeader != string(mcp.VersionNext) {
@@ -74,7 +74,7 @@ func TestCallSetsRoutingHeadersOnlyForVersionNext(t *testing.T) {
 		defer srv.Close()
 
 		client := NewClient(srv.URL)
-		if _, err := client.Call(context.Background(), mcp.VersionNext, toolsCallReq); err != nil {
+		if _, err := client.Call(context.Background(), mcp.VersionNext, toolsCallReq, ""); err != nil {
 			t.Fatalf("Call: %v", err)
 		}
 		if gotMethod != mcp.MethodToolsCall {
@@ -96,7 +96,7 @@ func TestCallSetsRoutingHeadersOnlyForVersionNext(t *testing.T) {
 		defer srv.Close()
 
 		client := NewClient(srv.URL)
-		if _, err := client.Call(context.Background(), mcp.VersionCurrent, toolsCallReq); err != nil {
+		if _, err := client.Call(context.Background(), mcp.VersionCurrent, toolsCallReq, ""); err != nil {
 			t.Fatalf("Call: %v", err)
 		}
 		if sawMethod || sawName {
@@ -108,7 +108,45 @@ func TestCallSetsRoutingHeadersOnlyForVersionNext(t *testing.T) {
 func TestCallReturnsErrorOnUnreachableUpstream(t *testing.T) {
 	client := NewClient("http://127.0.0.1:1") // reserved port, nothing listens here
 	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
-	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req); err == nil {
+	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req, ""); err == nil {
 		t.Fatal("expected an error calling an unreachable upstream, got nil")
+	}
+}
+
+func TestCallForwardsAuthorizationHeaderWhenPresent(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
+	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req, "Bearer opaque-token-value"); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if gotAuth != "Bearer opaque-token-value" {
+		t.Fatalf("Authorization = %q, want %q — Outpost forwards opaque bearer tokens, never brokers them", gotAuth, "Bearer opaque-token-value")
+	}
+}
+
+func TestCallOmitsAuthorizationHeaderWhenAbsent(t *testing.T) {
+	var sawAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawAuth = r.Header["Authorization"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
+	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req, ""); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if sawAuth {
+		t.Fatal("Authorization header present on the outgoing request when the client sent none")
 	}
 }

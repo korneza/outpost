@@ -34,7 +34,11 @@ func NewClient(baseURL string) *Client {
 // For VersionNext, Call sets the Mcp-Method routing header (and Mcp-Name,
 // when req is a tools/call) so infrastructure in front of the upstream can
 // route without inspecting the JSON-RPC body — see ADR-0002.
-func (c *Client) Call(ctx context.Context, version mcp.ProtocolVersion, req *mcp.Request) (*mcp.Response, error) {
+//
+// authHeader, if non-empty, is forwarded verbatim as the outgoing
+// Authorization header — Outpost forwards opaque bearer tokens between
+// agent and server; it never mints, stores, or inspects them.
+func (c *Client) Call(ctx context.Context, version mcp.ProtocolVersion, req *mcp.Request, authHeader string) (*mcp.Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("upstream: encode request: %w", err)
@@ -47,6 +51,9 @@ func (c *Client) Call(ctx context.Context, version mcp.ProtocolVersion, req *mcp
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set(mcp.ProtocolVersionHeader, string(version))
+	if authHeader != "" {
+		httpReq.Header.Set("Authorization", authHeader)
+	}
 	if version == mcp.VersionNext {
 		httpReq.Header.Set("Mcp-Method", req.Method)
 		if name := mcp.ToolName(req); name != "" {
