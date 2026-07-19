@@ -3,6 +3,7 @@ package pinning
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/korneza/outpost/internal/mcp"
@@ -138,5 +139,52 @@ func TestIsDriftedFalseForUnknownTool(t *testing.T) {
 	p := newTestPinner(t)
 	if p.IsDrifted("files", "never.seen") {
 		t.Fatal("IsDrifted: want false for a tool with no history at all")
+	}
+}
+
+func TestHydrateRestoresDriftedStateAfterRestart(t *testing.T) {
+	// Simulates a process restart: build up drift history with one Pinner
+	// backed by a real (non-:memory:) file, then construct a brand-new
+	// Pinner instance against the same store — mirroring how outpost serve
+	// re-opens its state_db file on every startup — and confirm Hydrate
+	// restores the block state a fresh in-memory map would otherwise lose.
+	dbPath := filepath.Join(t.TempDir(), "outpost.db")
+	st1, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	ctx := context.Background()
+	p1 := New(st1)
+	if _, err := p1.LearnFromToolsList(ctx, "files",
+		toolsListResponse(`{"name":"files.read","description":"v1"}`)); err != nil {
+		t.Fatalf("first learn: %v", err)
+	}
+	if _, err := p1.LearnFromToolsList(ctx, "files",
+		toolsListResponse(`{"name":"files.read","description":"v2 (rug pull)"}`)); err != nil {
+		t.Fatalf("second learn: %v", err)
+	}
+	if !p1.IsDrifted("files", "files.read") {
+		t.Fatal("sanity check: p1 should show drift before the simulated restart")
+	}
+	if err := st1.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// The "restart": a fresh Pinner, fresh in-memory state, same DB file.
+	st2, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open (reopen): %v", err)
+	}
+	defer st2.Close()
+	p2 := New(st2)
+	if p2.IsDrifted("files", "files.read") {
+		t.Fatal("sanity check: a freshly constructed Pinner must start with no in-memory drift state")
+	}
+
+	if err := p2.Hydrate(ctx); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if !p2.IsDrifted("files", "files.read") {
+		t.Fatal("Hydrate: want the post-restart Pinner to recognize files.read as still drifted, restoring the block")
 	}
 }

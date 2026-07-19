@@ -114,6 +114,28 @@ func (p *Pinner) LearnFromToolsList(ctx context.Context, upstream string, resp *
 	return alerts, nil
 }
 
+// Hydrate loads existing drift history from the store and marks every
+// (upstream, tool) pair with at least one recorded drift event as
+// currently drifted. Call this once after New, before serving traffic —
+// without it, a process restart silently clears in-memory block state
+// (IsDrifted) even though the persisted pin and drift log are untouched,
+// which would let a previously block:true-blocked tool become callable
+// again until the next tools/list happens to re-detect the same drift.
+// There is no "resolve drift" mechanism in v1, so any recorded drift is
+// treated as still active — the conservative, safe direction.
+func (p *Pinner) Hydrate(ctx context.Context) error {
+	tools, err := p.store.ListDriftedTools(ctx)
+	if err != nil {
+		return fmt.Errorf("pinning: hydrate: %w", err)
+	}
+	p.mu.Lock()
+	for _, t := range tools {
+		p.drifted[key(t.Upstream, t.ToolName)] = true
+	}
+	p.mu.Unlock()
+	return nil
+}
+
 // IsDrifted reports whether (upstream, tool) currently has an unresolved
 // drift alert. False for a tool with no history, or whose most recent
 // sighting matched its pin.
