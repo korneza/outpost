@@ -10,7 +10,7 @@ import (
 
 type fakeClock struct{ now time.Time }
 
-func (c *fakeClock) Now() time.Time         { return c.now }
+func (c *fakeClock) Now() time.Time          { return c.now }
 func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 
 func newTestBreaker(t *testing.T, cfg Config) (*Breaker, *fakeClock) {
