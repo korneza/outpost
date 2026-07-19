@@ -156,3 +156,105 @@ func TestProxySetsNegotiatedVersionOnResponse(t *testing.T) {
 		t.Fatalf("%s response header = %q, want %q", mcp.ProtocolVersionHeader, got, mcp.VersionNext)
 	}
 }
+
+func TestProxyRejectsInvalidToolCallWithoutReachingUpstream(t *testing.T) {
+	var toolsCallCount int
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		if req.Method == mcp.MethodToolsList {
+			return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(
+				`{"tools":[{"name":"files.read","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}`,
+			)}
+		}
+		toolsCallCount++
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"should not be reached"}`)}
+	})
+	defer up.Close()
+
+	handler, _ := newTestProxy(t, up.URL)
+
+	// First, tools/list — the proxy learns files.read's schema.
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("tools/list status = %d, want 200", listRec.Code)
+	}
+
+	// Then, an invalid tools/call — missing the required "path" argument.
+	callRec := httptest.NewRecorder()
+	callBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"files.read","arguments":{}}}`
+	callReq := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(callBody))
+	handler.ServeHTTP(callRec, callReq)
+
+	if callRec.Code != http.StatusOK {
+		t.Fatalf("tools/call status = %d, want 200 (JSON-RPC errors are transport-200)", callRec.Code)
+	}
+	var resp mcp.Response
+	if err := json.Unmarshal(callRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != mcp.InvalidParams {
+		t.Fatalf("Error = %+v, want code %d (InvalidParams)", resp.Error, mcp.InvalidParams)
+	}
+	if toolsCallCount != 0 {
+		t.Fatalf("upstream saw %d tools/call requests, want 0 — T1 must reject before forwarding", toolsCallCount)
+	}
+}
+
+func TestProxyForwardsValidToolCallAfterLearningSchema(t *testing.T) {
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		if req.Method == mcp.MethodToolsList {
+			return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(
+				`{"tools":[{"name":"files.read","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}`,
+			)}
+		}
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"real content"}`)}
+	})
+	defer up.Close()
+
+	handler, _ := newTestProxy(t, up.URL)
+
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	handler.ServeHTTP(listRec, listReq)
+
+	callRec := httptest.NewRecorder()
+	callBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"files.read","arguments":{"path":"/tmp/x"}}}`
+	callReq := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(callBody))
+	handler.ServeHTTP(callRec, callReq)
+
+	var resp mcp.Response
+	if err := json.Unmarshal(callRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("unexpected error for a valid call: %+v", resp.Error)
+	}
+	if string(resp.Result) != `{"content":"real content"}` {
+		t.Fatalf("Result = %s, want {\"content\":\"real content\"}", resp.Result)
+	}
+}
+
+func TestProxyStillForwardsToolCallForUnlearnedTool(t *testing.T) {
+	// Regression guard: T1 must stay fail-open for tools it has never seen
+	// via tools/list — this is what keeps existing behavior (and existing
+	// tests, like TestProxyForwardsToolsCallToUpstream) unbroken.
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"ok"}`)}
+	})
+	defer up.Close()
+
+	handler, _ := newTestProxy(t, up.URL)
+	rec := httptest.NewRecorder()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"never.listed","arguments":{"anything":"goes"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	var resp mcp.Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("unexpected error for an unlearned tool: %+v — T1 must fail open", resp.Error)
+	}
+}

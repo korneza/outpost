@@ -15,6 +15,7 @@ import (
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/mcp"
+	"github.com/korneza/outpost/internal/t1"
 	"github.com/korneza/outpost/internal/upstream"
 )
 
@@ -30,6 +31,7 @@ func New(cfg *config.Config, logger *slog.Logger) (http.Handler, error) {
 			name:   u.Name,
 			client: upstream.NewClient(u.URL),
 			logger: logger,
+			t1:     t1.New(),
 		}
 		mux.Handle("/"+u.Name, h)
 	}
@@ -40,6 +42,7 @@ type upstreamHandler struct {
 	name   string
 	client *upstream.Client
 	logger *slog.Logger
+	t1     *t1.Validator
 }
 
 func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -63,13 +66,25 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	version := mcp.NegotiateVersion(r.Header.Get(mcp.ProtocolVersionHeader))
 	tool := mcp.ToolName(&req)
+	w.Header().Set(mcp.ProtocolVersionHeader, string(version))
+
+	if req.Method == mcp.MethodToolsCall {
+		if violation := h.t1.Check(tool, &req); violation != "" {
+			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("t1 rejected: %s", violation))
+			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.InvalidParams, violation))
+			return
+		}
+	}
 
 	start := time.Now()
 	resp, callErr := h.client.Call(r.Context(), version, &req)
 	duration := time.Since(start)
 	logging.LogCall(h.logger, h.name, req.Method, tool, duration, callErr)
 
-	w.Header().Set(mcp.ProtocolVersionHeader, string(version))
+	if callErr == nil && req.Method == mcp.MethodToolsList {
+		h.t1.LearnFromToolsList(resp)
+	}
+
 	if callErr != nil {
 		writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.InternalError, "upstream call failed"))
 		return
