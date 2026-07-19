@@ -106,3 +106,70 @@ func TestServeEndToEndOverRealListener(t *testing.T) {
 		t.Fatalf("Result = %s, want {\"content\":\"pong from reference upstream\"}", decoded.Result)
 	}
 }
+
+func TestServeEndToEndRejectsInvalidToolCall(t *testing.T) {
+	var toolsCallCount int
+	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req mcp.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == mcp.MethodToolsList {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"files.read","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}}`))
+			return
+		}
+		toolsCallCount++
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"content":"should not be reached"}}`))
+	}))
+	defer fakeUpstream.Close()
+
+	configPath := filepath.Join(t.TempDir(), "outpost.yaml")
+	configYAML := "listen: \"127.0.0.1:0\"\nupstreams:\n  - name: files\n    url: \"" + fakeUpstream.URL + "\"\n"
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	srv, err := newServer(cfg, logging.New(io.Discard))
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	base := "http://" + ln.Addr().String() + "/files"
+
+	listResp, err := http.Post(base, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatalf("tools/list POST: %v", err)
+	}
+	listResp.Body.Close()
+
+	callResp, err := http.Post(base, "application/json", strings.NewReader(
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"files.read","arguments":{}}}`,
+	))
+	if err != nil {
+		t.Fatalf("tools/call POST: %v", err)
+	}
+	defer callResp.Body.Close()
+	data, err := io.ReadAll(callResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded mcp.Response
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, data)
+	}
+	if decoded.Error == nil || decoded.Error.Code != mcp.InvalidParams {
+		t.Fatalf("Error = %+v, want code %d (InvalidParams)", decoded.Error, mcp.InvalidParams)
+	}
+	if toolsCallCount != 0 {
+		t.Fatalf("upstream saw %d tools/call requests over the real listener, want 0", toolsCallCount)
+	}
+}
