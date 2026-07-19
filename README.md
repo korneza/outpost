@@ -14,7 +14,7 @@ If you run MCP agents in production today, three failure modes are waiting for y
 
 ## What Outpost does
 
-- **Structural validation (T1)** — synchronous, sub-millisecond schema checks on every `tools/call`. No LLM in the request path, ever.
+- **Structural validation (T1)** — synchronous, sub-millisecond schema checks on every `tools/call`, learned automatically from the upstream's own `tools/list` responses. Fail-open: a tool Outpost hasn't seen yet is never blocked. No LLM in the request path, ever.
 - **Circuit breaking** — per-tool failure-rate tripping with deterministic thresholds.
 - **List-operation caching** — in-process cache for `tools/list` and `resources/read`, honouring the spec's `cacheScope`. Explicitly **not** `tools/call`.
 - **Schema-drift detection** — diffs tool definitions across calls and flags changes.
@@ -50,7 +50,7 @@ cp example.outpost.yaml outpost.yaml   # edit the upstream URL(s) to match your 
 
 Outpost listens on the configured address and exposes one route per upstream, at `/{upstream-name}`. Point your MCP client at `http://<listen-addr>/<upstream-name>` instead of the upstream directly.
 
-This is pre-`v0.9.0` — structural validation, drift detection, pinning, circuit breaking, and anomaly detection aren't wired in yet. Today's binary proxies and negotiates protocol version; it doesn't yet inspect or protect.
+This is pre-`v0.9.0` — drift detection, pinning, circuit breaking, and anomaly detection aren't wired in yet. Today's binary proxies, negotiates protocol version, and structurally validates `tools/call` arguments against schemas it's learned; it doesn't yet detect tampering or anomalies.
 
 ## Contributing
 
