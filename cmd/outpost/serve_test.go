@@ -356,7 +356,13 @@ func TestServeEndToEndDetectsLatencyAnomaly(t *testing.T) {
 		}
 		callNum++
 		if callNum > 25 {
-			time.Sleep(50 * time.Millisecond)
+			// Large enough to stay a clear 3-stddev outlier even under a
+			// heavily loaded/contended CI runner (-race inflates scheduling
+			// jitter on the 25 "normal" baseline calls too — a 50ms margin
+			// measured flaky under -race + CPU-constrained CI; reproduced
+			// locally via Docker with --cpus=2 to match GitHub's runner
+			// shape before picking this value).
+			time.Sleep(750 * time.Millisecond)
 		}
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"content":"ok"}}`))
 	}))
