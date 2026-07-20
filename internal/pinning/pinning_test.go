@@ -98,6 +98,15 @@ func TestDriftDetectedOnDescriptionChangeAlone(t *testing.T) {
 	if !p.IsDrifted("files", "files.read") {
 		t.Fatal("IsDrifted: want true after a detected drift")
 	}
+	if len(alerts[0].ToolDef) == 0 {
+		t.Fatal("DriftAlert must carry the new tool definition — the scanner needs content to scan, not just hashes")
+	}
+	var def struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(alerts[0].ToolDef, &def); err != nil || def.Name != "files.read" {
+		t.Fatalf("ToolDef = %s, want a valid tool definition for files.read", alerts[0].ToolDef)
+	}
 }
 
 func TestDriftIsPersistedToStore(t *testing.T) {

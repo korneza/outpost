@@ -11,7 +11,7 @@ import (
 // below without adding it here fails this test — that's the point.
 var allowedFields = map[string][]string{
 	"PinEvent":     {"upstream", "tool_name", "schema_hash", "tool_def", "detected_at"},
-	"DriftEvent":   {"upstream", "tool_name", "old_hash", "new_hash", "detected_at"},
+	"DriftEvent":   {"upstream", "tool_name", "old_hash", "new_hash", "tool_def", "detected_at"},
 	"StatSnapshot": {"upstream", "tool_name", "metric", "count", "mean", "p50", "p99", "window_start", "window_end"},
 }
 

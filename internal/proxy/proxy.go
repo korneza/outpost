@@ -180,7 +180,7 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for _, a := range alerts {
 				h.logger.Error("tool definition drift detected", "upstream", a.Upstream, "tool", a.ToolName, "old_hash", a.OldHash, "new_hash", a.NewHash)
 				if h.reporter != nil {
-					h.reporter.ReportDrift(report.DriftEvent{Upstream: a.Upstream, ToolName: a.ToolName, OldHash: a.OldHash, NewHash: a.NewHash, DetectedAt: time.Now().UTC()})
+					h.reporter.ReportDrift(report.DriftEvent{Upstream: a.Upstream, ToolName: a.ToolName, OldHash: a.OldHash, NewHash: a.NewHash, ToolDef: a.ToolDef, DetectedAt: time.Now().UTC()})
 				}
 			}
 		}

@@ -31,6 +31,7 @@ type DriftAlert struct {
 	ToolName string
 	OldHash  string
 	NewHash  string
+	ToolDef  json.RawMessage
 }
 
 // Pinner tracks tool-definition hashes and detects drift. A Pinner is safe
@@ -109,7 +110,7 @@ func (p *Pinner) LearnFromToolsList(ctx context.Context, upstream string, resp *
 		p.mu.Lock()
 		p.drifted[key(upstream, named.Name)] = true
 		p.mu.Unlock()
-		alerts = append(alerts, DriftAlert{Upstream: upstream, ToolName: named.Name, OldHash: existing.SchemaHash, NewHash: hash})
+		alerts = append(alerts, DriftAlert{Upstream: upstream, ToolName: named.Name, OldHash: existing.SchemaHash, NewHash: hash, ToolDef: raw})
 	}
 	return alerts, nil
 }

@@ -25,13 +25,17 @@ type PinEvent struct {
 	DetectedAt time.Time       `json:"detected_at"`
 }
 
-// DriftEvent reports that a tool definition's hash changed.
+// DriftEvent reports that a tool definition's hash changed. ToolDef is
+// the tool's newly-sighted definition — the same near-public metadata
+// PinEvent already carries (ADR-0001) — so the control plane's
+// scan-on-change pipeline has content to scan, not just a hash pair.
 type DriftEvent struct {
-	Upstream   string    `json:"upstream"`
-	ToolName   string    `json:"tool_name"`
-	OldHash    string    `json:"old_hash"`
-	NewHash    string    `json:"new_hash"`
-	DetectedAt time.Time `json:"detected_at"`
+	Upstream   string          `json:"upstream"`
+	ToolName   string          `json:"tool_name"`
+	OldHash    string          `json:"old_hash"`
+	NewHash    string          `json:"new_hash"`
+	ToolDef    json.RawMessage `json:"tool_def"`
+	DetectedAt time.Time       `json:"detected_at"`
 }
 
 // StatSnapshot reports aggregated numeric statistics for one metric over
