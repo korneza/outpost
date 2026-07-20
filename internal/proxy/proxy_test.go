@@ -15,6 +15,7 @@ import (
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/mcp"
 	"github.com/korneza/outpost/internal/store"
+	"github.com/korneza/outpost/internal/tracing"
 )
 
 func fakeUpstream(t *testing.T, respond func(mcp.Request) mcp.Response) *httptest.Server {
@@ -42,7 +43,7 @@ func newTestProxy(t *testing.T, upstreamURL string) (http.Handler, *bytes.Buffer
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	var logBuf bytes.Buffer
-	handler, err := New(cfg, logging.New(&logBuf), st)
+	handler, err := New(cfg, logging.New(&logBuf), st, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -60,7 +61,7 @@ func newTestProxyWithCacheTTL(t *testing.T, upstreamURL string, ttlSeconds int) 
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st)
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -395,7 +396,7 @@ func TestProxyBlocksToolCallWhenDriftedAndBlockConfigured(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close()
-	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st)
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -535,7 +536,7 @@ func TestProxyRestoresDriftBlockOnStartupWithoutFreshToolsList(t *testing.T) {
 		Upstreams: []config.Upstream{{Name: "files", URL: up.URL}},
 		Tools:     map[string]config.ToolOverride{"files.read": {Block: true}},
 	}
-	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st)
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -594,5 +595,44 @@ func TestProxyNeverCachesToolsCall(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("tools/call must never be cached: expected 3 upstream calls, got %d", calls)
+	}
+}
+
+func TestProxyEmitsSpanPerCall(t *testing.T) {
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"tools":[]}`)}
+	})
+	defer up.Close()
+
+	var spanBuf bytes.Buffer
+	tp, err := tracing.NewProvider(&spanBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tp.Shutdown(context.Background())
+
+	cfg := &config.Config{
+		Listen:    "127.0.0.1:0",
+		Upstreams: []config.Upstream{{Name: "files", URL: up.URL}},
+	}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st, tp)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	handler.ServeHTTP(rec, req)
+	if err := tp.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(spanBuf.String(), `"tools/list"`) {
+		t.Fatalf("expected a span for tools/list, got: %s", spanBuf.String())
 	}
 }

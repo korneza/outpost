@@ -22,13 +22,18 @@ import (
 	"github.com/korneza/outpost/internal/pinning"
 	"github.com/korneza/outpost/internal/store"
 	"github.com/korneza/outpost/internal/t1"
+	"github.com/korneza/outpost/internal/tracing"
 	"github.com/korneza/outpost/internal/upstream"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // New builds the proxy's HTTP handler from cfg: one route per configured
 // upstream, at path "/{upstream.Name}". st backs each upstream's circuit
-// breaker and pinning state for persistence.
-func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler, error) {
+// breaker and pinning state for persistence. tp is nil-safe: a nil
+// TracerProvider disables span emission entirely (same nil-safe pattern
+// as the per-upstream cache).
+func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.TracerProvider) (http.Handler, error) {
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("proxy: at least one upstream is required")
 	}
@@ -57,6 +62,7 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler
 			anomaly: anomaly.New(),
 			tools:   cfg.Tools,
 			cache:   c,
+			tp:      tp,
 		}
 		mux.Handle("/"+u.Name, h)
 	}
@@ -73,6 +79,7 @@ type upstreamHandler struct {
 	anomaly *anomaly.Detector
 	tools   map[string]config.ToolOverride
 	cache   *cache.Cache
+	tp      *sdktrace.TracerProvider
 }
 
 func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -128,10 +135,20 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	ctx := r.Context()
+	var span trace.Span
+	if h.tp != nil {
+		ctx, span = tracing.StartCallSpan(ctx, h.tp, h.name, req.Method, tool)
+	}
+
 	start := time.Now()
-	resp, callErr := h.client.Call(r.Context(), version, &req, r.Header.Get("Authorization"))
+	resp, callErr := h.client.Call(ctx, version, &req, r.Header.Get("Authorization"))
 	duration := time.Since(start)
 	logging.LogCall(h.logger, h.name, req.Method, tool, duration, callErr)
+
+	if span != nil {
+		tracing.EndCallSpan(span, float64(duration.Milliseconds()), callErr == nil)
+	}
 
 	if cacheKey != "" && callErr == nil && resp != nil && resp.Error == nil {
 		h.cache.Set(cacheKey, resp.Result)

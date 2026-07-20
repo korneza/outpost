@@ -26,7 +26,7 @@ func TestNewServerUsesConfiguredListenAddress(t *testing.T) {
 		StateDB:   filepath.Join(t.TempDir(), "outpost.db"),
 		Upstreams: []config.Upstream{{Name: "files", URL: "http://127.0.0.1:9999/mcp"}},
 	}
-	srv, st, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard), io.Discard)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestNewServerUsesConfiguredListenAddress(t *testing.T) {
 
 func TestNewServerRejectsConfigWithNoUpstreams(t *testing.T) {
 	cfg := &config.Config{Listen: "127.0.0.1:8123", StateDB: filepath.Join(t.TempDir(), "outpost.db")}
-	if _, _, err := newServer(cfg, logging.New(io.Discard)); err == nil {
+	if _, _, err := newServer(cfg, logging.New(io.Discard), io.Discard); err == nil {
 		t.Fatal("expected an error building a server with no upstreams")
 	}
 }
@@ -81,7 +81,7 @@ func TestServeEndToEndOverRealListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	srv, st, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard), io.Discard)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestServeEndToEndRejectsInvalidToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	srv, st, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard), io.Discard)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestServeEndToEndTripsBreakerAfterConsecutiveFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	srv, st, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard), io.Discard)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -256,7 +256,7 @@ func proxyNewForTest(cfg *config.Config, logBuf *bytes.Buffer) (http.Handler, *s
 	if err != nil {
 		return nil, nil, err
 	}
-	handler, err := proxy.New(cfg, logging.New(logBuf), st)
+	handler, err := proxy.New(cfg, logging.New(logBuf), st, nil)
 	if err != nil {
 		st.Close()
 		return nil, nil, err

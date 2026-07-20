@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,28 +15,42 @@ import (
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/proxy"
 	"github.com/korneza/outpost/internal/store"
+	"github.com/korneza/outpost/internal/tracing"
 	"github.com/korneza/outpost/internal/version"
 )
 
 // newServer builds the HTTP server that will run the proxy, from a loaded
 // config. It does not start listening — callers decide how to run and shut
 // it down. The returned *store.Store is the caller's to close; it opens
-// cfg.StateDB but does not own its lifecycle beyond that.
-func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, *store.Store, error) {
+// cfg.StateDB but does not own its lifecycle beyond that. traceWriter
+// receives exported OTel spans (os.Stdout in production; tests pass
+// io.Discard to keep test output clean). The tracer provider's shutdown
+// is registered on the server itself via RegisterOnShutdown, so callers
+// don't need to manage its lifecycle separately — a graceful
+// srv.Shutdown flushes it automatically.
+func newServer(cfg *config.Config, logger *slog.Logger, traceWriter io.Writer) (*http.Server, *store.Store, error) {
 	st, err := store.Open(cfg.StateDB)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}
-	handler, err := proxy.New(cfg, logger, st)
+	tp, err := tracing.NewProvider(traceWriter)
 	if err != nil {
 		st.Close()
+		return nil, nil, fmt.Errorf("build tracer provider: %w", err)
+	}
+	handler, err := proxy.New(cfg, logger, st, tp)
+	if err != nil {
+		st.Close()
+		tp.Shutdown(context.Background())
 		return nil, nil, fmt.Errorf("build proxy: %w", err)
 	}
-	return &http.Server{
+	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-	}, st, nil
+	}
+	srv.RegisterOnShutdown(func() { tp.Shutdown(context.Background()) })
+	return srv, st, nil
 }
 
 // runServe loads configPath, starts the proxy server, and blocks until an
@@ -50,7 +65,7 @@ func runServe(configPath string, stdout, stderr *os.File) int {
 		return 1
 	}
 
-	srv, st, err := newServer(cfg, logger)
+	srv, st, err := newServer(cfg, logger, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "outpost serve: %v\n", err)
 		return 1

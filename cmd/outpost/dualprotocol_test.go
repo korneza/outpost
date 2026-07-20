@@ -51,7 +51,7 @@ func TestServeSupportsBothProtocolVersionsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	srv, st, err := newServer(cfg, logging.New(io.Discard))
+	srv, st, err := newServer(cfg, logging.New(io.Discard), io.Discard)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
