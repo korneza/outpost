@@ -20,8 +20,9 @@ type Config struct {
 }
 
 type Upstream struct {
-	Name string `yaml:"name"`
-	URL  string `yaml:"url"`
+	Name            string `yaml:"name"`
+	URL             string `yaml:"url"`
+	CacheTTLSeconds int    `yaml:"cache_ttl_seconds"`
 }
 
 type ToolOverride struct {

@@ -49,6 +49,24 @@ func newTestProxy(t *testing.T, upstreamURL string) (http.Handler, *bytes.Buffer
 	return handler, &logBuf
 }
 
+func newTestProxyWithCacheTTL(t *testing.T, upstreamURL string, ttlSeconds int) http.Handler {
+	t.Helper()
+	cfg := &config.Config{
+		Listen:    "127.0.0.1:0",
+		Upstreams: []config.Upstream{{Name: "files", URL: upstreamURL, CacheTTLSeconds: ttlSeconds}},
+	}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return handler
+}
+
 func TestProxyForwardsToolsCallToUpstream(t *testing.T) {
 	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
 		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"hello"}`)}
@@ -537,5 +555,44 @@ func TestProxyRestoresDriftBlockOnStartupWithoutFreshToolsList(t *testing.T) {
 	}
 	if toolsCallReached {
 		t.Fatal("upstream saw the call — restart must not silently lift a drift block")
+	}
+}
+
+func TestProxyCachesToolsListWithinTTL(t *testing.T) {
+	calls := 0
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		calls++
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"tools":[]}`)}
+	})
+	defer up.Close()
+
+	handler := newTestProxyWithCacheTTL(t, up.URL, 10)
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		handler.ServeHTTP(rec, req)
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 upstream call (cached), got %d", calls)
+	}
+}
+
+func TestProxyNeverCachesToolsCall(t *testing.T) {
+	calls := 0
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		calls++
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":[]}`)}
+	})
+	defer up.Close()
+
+	handler := newTestProxyWithCacheTTL(t, up.URL, 10)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(body))
+		handler.ServeHTTP(rec, req)
+	}
+	if calls != 3 {
+		t.Fatalf("tools/call must never be cached: expected 3 upstream calls, got %d", calls)
 	}
 }

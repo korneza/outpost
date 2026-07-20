@@ -15,6 +15,7 @@ import (
 
 	"github.com/korneza/outpost/internal/anomaly"
 	"github.com/korneza/outpost/internal/breaker"
+	"github.com/korneza/outpost/internal/cache"
 	"github.com/korneza/outpost/internal/config"
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/mcp"
@@ -42,6 +43,10 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler
 		if err := p.Hydrate(context.Background()); err != nil {
 			logger.Error("pinning: failed to hydrate drift state from store", "upstream", u.Name, "error", err)
 		}
+		var c *cache.Cache
+		if u.CacheTTLSeconds > 0 {
+			c = cache.New(time.Duration(u.CacheTTLSeconds) * time.Second)
+		}
 		h := &upstreamHandler{
 			name:    u.Name,
 			client:  upstream.NewClient(u.URL),
@@ -51,6 +56,7 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store) (http.Handler
 			pinning: p,
 			anomaly: anomaly.New(),
 			tools:   cfg.Tools,
+			cache:   c,
 		}
 		mux.Handle("/"+u.Name, h)
 	}
@@ -66,6 +72,7 @@ type upstreamHandler struct {
 	pinning *pinning.Pinner
 	anomaly *anomaly.Detector
 	tools   map[string]config.ToolOverride
+	cache   *cache.Cache
 }
 
 func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -109,10 +116,26 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var cacheKey string
+	if h.cache != nil {
+		if key, ok := h.cache.Key(req.Method, h.name, req.Params); ok {
+			cacheKey = key
+			if cached, hit := h.cache.Get(cacheKey); hit {
+				logging.LogCall(h.logger, h.name, req.Method, tool, 0, nil)
+				writeResponse(w, &mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: cached})
+				return
+			}
+		}
+	}
+
 	start := time.Now()
 	resp, callErr := h.client.Call(r.Context(), version, &req, r.Header.Get("Authorization"))
 	duration := time.Since(start)
 	logging.LogCall(h.logger, h.name, req.Method, tool, duration, callErr)
+
+	if cacheKey != "" && callErr == nil && resp != nil && resp.Error == nil {
+		h.cache.Set(cacheKey, resp.Result)
+	}
 
 	if req.Method == mcp.MethodToolsCall {
 		success := callErr == nil && (resp == nil || resp.Error == nil)
