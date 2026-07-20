@@ -13,10 +13,11 @@ import (
 )
 
 type Config struct {
-	Listen    string                  `yaml:"listen"`
-	StateDB   string                  `yaml:"state_db"`
-	Upstreams []Upstream              `yaml:"upstreams"`
-	Tools     map[string]ToolOverride `yaml:"tools"`
+	Listen          string                  `yaml:"listen"`
+	StateDB         string                  `yaml:"state_db"`
+	ControlPlaneURL string                  `yaml:"control_plane_url"`
+	Upstreams       []Upstream              `yaml:"upstreams"`
+	Tools           map[string]ToolOverride `yaml:"tools"`
 }
 
 type Upstream struct {

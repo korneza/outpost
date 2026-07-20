@@ -20,6 +20,8 @@ import (
 	"github.com/korneza/outpost/internal/logging"
 	"github.com/korneza/outpost/internal/mcp"
 	"github.com/korneza/outpost/internal/pinning"
+	"github.com/korneza/outpost/internal/report"
+	"github.com/korneza/outpost/internal/reporter"
 	"github.com/korneza/outpost/internal/store"
 	"github.com/korneza/outpost/internal/t1"
 	"github.com/korneza/outpost/internal/tracing"
@@ -37,6 +39,10 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("proxy: at least one upstream is required")
 	}
+	var rep *reporter.Reporter
+	if cfg.ControlPlaneURL != "" {
+		rep = reporter.New(cfg.ControlPlaneURL, 256)
+	}
 	mux := http.NewServeMux()
 	for _, u := range cfg.Upstreams {
 		p := pinning.New(st)
@@ -53,16 +59,17 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.
 			c = cache.New(time.Duration(u.CacheTTLSeconds) * time.Second)
 		}
 		h := &upstreamHandler{
-			name:    u.Name,
-			client:  upstream.NewClient(u.URL),
-			logger:  logger,
-			t1:      t1.New(),
-			breaker: breaker.New(st, breaker.DefaultConfig()),
-			pinning: p,
-			anomaly: anomaly.New(),
-			tools:   cfg.Tools,
-			cache:   c,
-			tp:      tp,
+			name:     u.Name,
+			client:   upstream.NewClient(u.URL),
+			logger:   logger,
+			t1:       t1.New(),
+			breaker:  breaker.New(st, breaker.DefaultConfig()),
+			pinning:  p,
+			anomaly:  anomaly.New(),
+			tools:    cfg.Tools,
+			cache:    c,
+			tp:       tp,
+			reporter: rep,
 		}
 		mux.Handle("/"+u.Name, h)
 	}
@@ -70,16 +77,17 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.
 }
 
 type upstreamHandler struct {
-	name    string
-	client  *upstream.Client
-	logger  *slog.Logger
-	t1      *t1.Validator
-	breaker *breaker.Breaker
-	pinning *pinning.Pinner
-	anomaly *anomaly.Detector
-	tools   map[string]config.ToolOverride
-	cache   *cache.Cache
-	tp      *sdktrace.TracerProvider
+	name     string
+	client   *upstream.Client
+	logger   *slog.Logger
+	t1       *t1.Validator
+	breaker  *breaker.Breaker
+	pinning  *pinning.Pinner
+	anomaly  *anomaly.Detector
+	tools    map[string]config.ToolOverride
+	cache    *cache.Cache
+	tp       *sdktrace.TracerProvider
+	reporter *reporter.Reporter
 }
 
 func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -171,6 +179,9 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			for _, a := range alerts {
 				h.logger.Error("tool definition drift detected", "upstream", a.Upstream, "tool", a.ToolName, "old_hash", a.OldHash, "new_hash", a.NewHash)
+				if h.reporter != nil {
+					h.reporter.ReportDrift(report.DriftEvent{Upstream: a.Upstream, ToolName: a.ToolName, OldHash: a.OldHash, NewHash: a.NewHash, DetectedAt: time.Now().UTC()})
+				}
 			}
 		}
 	}

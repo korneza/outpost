@@ -636,3 +636,58 @@ func TestProxyEmitsSpanPerCall(t *testing.T) {
 		t.Fatalf("expected a span for tools/list, got: %s", spanBuf.String())
 	}
 }
+
+func TestProxyToleratesControlPlaneBeingDown(t *testing.T) {
+	// A drift event (not just any tools/list) is what actually exercises
+	// the reporter's HTTP call — first-sight pins don't report yet
+	// (pinning.LearnFromToolsList only returns drift alerts).
+	callNum := 0
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		if req.Method == mcp.MethodToolsList {
+			callNum++
+			desc := "reads a file"
+			if callNum > 1 {
+				desc = "reads a file, differently"
+			}
+			return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(
+				`{"tools":[{"name":"echo","description":"` + desc + `","inputSchema":{"type":"object"}}]}`,
+			)}
+		}
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"ok"}`)}
+	})
+	defer up.Close()
+
+	cfg := &config.Config{
+		Listen:          "127.0.0.1:0",
+		Upstreams:       []config.Upstream{{Name: "files", URL: up.URL}},
+		ControlPlaneURL: "http://127.0.0.1:1", // closed port
+	}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	list := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	list() // pins the original description
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- list() }() // the drifted relist — triggers ReportDrift
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 — control plane outage must not affect traffic", rec.Code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("request must complete even when the control plane is unreachable")
+	}
+}
