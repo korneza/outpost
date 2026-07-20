@@ -65,7 +65,7 @@ func TestRunServeFailsCleanlyOnMissingConfig(t *testing.T) {
 }
 
 func TestServeEndToEndOverRealListener(t *testing.T) {
-	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":"pong from reference upstream"}}`))
 	}))

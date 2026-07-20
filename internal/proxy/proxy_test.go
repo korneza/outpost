@@ -93,7 +93,7 @@ func TestProxyForwardsToolsCallToUpstream(t *testing.T) {
 }
 
 func TestProxyRejectsMalformedJSON(t *testing.T) {
-	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+	up := fakeUpstream(t, func(_ mcp.Request) mcp.Response {
 		t.Fatal("upstream should not be called for malformed input")
 		return mcp.Response{}
 	})
@@ -117,7 +117,7 @@ func TestProxyRejectsMalformedJSON(t *testing.T) {
 }
 
 func TestProxyRejectsGET(t *testing.T) {
-	up := fakeUpstream(t, func(req mcp.Request) mcp.Response { return mcp.Response{} })
+	up := fakeUpstream(t, func(_ mcp.Request) mcp.Response { return mcp.Response{} })
 	defer up.Close()
 
 	handler, _ := newTestProxy(t, up.URL)
@@ -131,7 +131,7 @@ func TestProxyRejectsGET(t *testing.T) {
 }
 
 func TestProxyUnknownUpstreamIs404(t *testing.T) {
-	up := fakeUpstream(t, func(req mcp.Request) mcp.Response { return mcp.Response{} })
+	up := fakeUpstream(t, func(_ mcp.Request) mcp.Response { return mcp.Response{} })
 	defer up.Close()
 
 	handler, _ := newTestProxy(t, up.URL)
@@ -609,7 +609,7 @@ func TestProxyEmitsSpanPerCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	cfg := &config.Config{
 		Listen:    "127.0.0.1:0",

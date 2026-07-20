@@ -41,7 +41,9 @@ func newServer(cfg *config.Config, logger *slog.Logger, traceWriter io.Writer) (
 	handler, err := proxy.New(cfg, logger, st, tp)
 	if err != nil {
 		st.Close()
-		tp.Shutdown(context.Background())
+		if shutdownErr := tp.Shutdown(context.Background()); shutdownErr != nil {
+			logger.Error("tracing: failed to shut down tracer provider", "error", shutdownErr)
+		}
 		return nil, nil, fmt.Errorf("build proxy: %w", err)
 	}
 	srv := &http.Server{
@@ -49,7 +51,11 @@ func newServer(cfg *config.Config, logger *slog.Logger, traceWriter io.Writer) (
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	srv.RegisterOnShutdown(func() { tp.Shutdown(context.Background()) })
+	srv.RegisterOnShutdown(func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			logger.Error("tracing: failed to shut down tracer provider", "error", err)
+		}
+	})
 	return srv, st, nil
 }
 

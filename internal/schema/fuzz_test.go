@@ -29,7 +29,7 @@ func FuzzValidate(f *testing.F) {
 	for _, s := range seeds {
 		f.Add(s.schemaJSON, s.valueJSON)
 	}
-	f.Fuzz(func(t *testing.T, schemaJSON, valueJSON string) {
+	f.Fuzz(func(_ *testing.T, schemaJSON, valueJSON string) {
 		sch, err := Parse(json.RawMessage(schemaJSON))
 		if err != nil {
 			return // invalid schema JSON is expected to error, not panic

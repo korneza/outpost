@@ -9,7 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver; pure Go, no cgo
 )
 
 // Store wraps a single SQLite database file holding all of Outpost's local

@@ -26,7 +26,7 @@ func FuzzUnmarshalRequest(f *testing.F) {
 	for _, s := range seeds {
 		f.Add([]byte(s))
 	}
-	f.Fuzz(func(t *testing.T, data []byte) {
+	f.Fuzz(func(_ *testing.T, data []byte) {
 		var req Request
 		_ = json.Unmarshal(data, &req) // error is fine; panic is not
 

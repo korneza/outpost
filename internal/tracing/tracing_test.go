@@ -13,7 +13,7 @@ func TestStartCallSpanRecordsAttributesNoPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	ctx, span := StartCallSpan(context.Background(), tp, "up1", "tools/call", "echo")
 	EndCallSpan(span, 12.5, true)
