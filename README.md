@@ -50,7 +50,7 @@ cp example.outpost.yaml outpost.yaml   # edit the upstream URL(s) to match your 
 
 Outpost listens on the configured address and exposes one route per upstream, at `/{upstream-name}`. Point your MCP client at `http://<listen-addr>/<upstream-name>` instead of the upstream directly.
 
-This is pre-`v0.9.0` — list-op caching isn't wired in yet. Today's binary proxies, negotiates protocol version, structurally validates `tools/call` arguments, trips a circuit breaker on repeated tool failures, detects (and optionally blocks) tool-definition drift, and flags statistical anomalies in latency and error rate.
+This is pre-`v0.9.0`. Today's binary proxies, negotiates protocol version, structurally validates `tools/call` arguments, trips a circuit breaker on repeated tool failures, caches `tools/list`/`resources/read` per upstream (`tools/call` is structurally uncacheable), detects (and optionally blocks) tool-definition drift, flags statistical anomalies in latency and error rate, and exports an OTel span per call. All 8 binary-side features from the 30-day plan's Week 2 scope are now complete (`v0.8.0-alpha`, tagged locally — no GitHub org/remote exists yet). A control-plane skeleton (`outpost-cloud`) can now ingest drift events over HTTP, but it isn't wired into any deployment — see that repo's README for what's real vs. still deferred.
 
 ## Contributing
 
