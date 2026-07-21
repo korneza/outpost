@@ -691,3 +691,18 @@ func TestProxyToleratesControlPlaneBeingDown(t *testing.T) {
 		t.Fatal("request must complete even when the control plane is unreachable")
 	}
 }
+
+func TestProxyExposesHealthz(t *testing.T) {
+	handler, _ := newTestProxy(t, "http://127.0.0.1:1") // upstream URL irrelevant — healthz never calls it
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["status"] != "ok" {
+		t.Fatalf("body = %s, want {\"status\":\"ok\"}", rec.Body.String())
+	}
+}

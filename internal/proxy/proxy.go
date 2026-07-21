@@ -44,6 +44,10 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.
 		rep = reporter.New(cfg.ControlPlaneURL, 256)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
 	for _, u := range cfg.Upstreams {
 		p := pinning.New(st)
 		// Restore drift-block state from persisted history — otherwise a
