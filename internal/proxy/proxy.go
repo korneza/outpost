@@ -117,31 +117,40 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	version := mcp.NegotiateVersion(r.Header.Get(mcp.ProtocolVersionHeader))
+	w.Header().Set(mcp.ProtocolVersionHeader, string(version))
+
+	resp := h.handle(r.Context(), body, r.Header.Get("Authorization"), r.Header.Get(mcp.ProtocolVersionHeader))
+	writeResponse(w, resp)
+}
+
+// handle runs one JSON-RPC request through the full gate — T1, circuit
+// breaker, pinning/drift, list-op cache, tracing, anomaly detection, and
+// control-plane reporting — independent of transport. ServeHTTP (HTTP)
+// and the stdio wrapper mode's read loop (internal/stdioupstream,
+// cmd/outpost's "run" command) both call this directly so neither
+// duplicates the gate logic.
+func (h *upstreamHandler) handle(ctx context.Context, body []byte, authHeader, protocolVersionHeader string) *mcp.Response {
 	var req mcp.Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeResponse(w, mcp.NewErrorResponse(nil, mcp.ParseError, "invalid JSON-RPC request"))
-		return
+		return mcp.NewErrorResponse(nil, mcp.ParseError, "invalid JSON-RPC request")
 	}
 
-	version := mcp.NegotiateVersion(r.Header.Get(mcp.ProtocolVersionHeader))
+	version := mcp.NegotiateVersion(protocolVersionHeader)
 	tool := mcp.ToolName(&req)
-	w.Header().Set(mcp.ProtocolVersionHeader, string(version))
 
 	if req.Method == mcp.MethodToolsCall {
 		if !h.breaker.Allow(h.name, tool) {
 			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("circuit breaker open"))
-			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.CircuitOpen, "circuit breaker open for this tool"))
-			return
+			return mcp.NewErrorResponse(req.ID, mcp.CircuitOpen, "circuit breaker open for this tool")
 		}
 		if h.pinning.IsDrifted(h.name, tool) && h.tools[tool].Block {
 			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("blocked: tool definition drift detected"))
-			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.DriftBlocked, "tool definition changed since it was pinned; blocked per configuration"))
-			return
+			return mcp.NewErrorResponse(req.ID, mcp.DriftBlocked, "tool definition changed since it was pinned; blocked per configuration")
 		}
 		if violation := h.t1.Check(tool, &req); violation != "" {
 			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("t1 rejected: %s", violation))
-			writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.InvalidParams, violation))
-			return
+			return mcp.NewErrorResponse(req.ID, mcp.InvalidParams, violation)
 		}
 	}
 
@@ -151,20 +160,19 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			cacheKey = key
 			if cached, hit := h.cache.Get(cacheKey); hit {
 				logging.LogCall(h.logger, h.name, req.Method, tool, 0, nil)
-				writeResponse(w, &mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: cached})
-				return
+				return &mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: cached}
 			}
 		}
 	}
 
-	ctx := r.Context()
+	spanCtx := ctx
 	var span trace.Span
 	if h.tp != nil {
-		ctx, span = tracing.StartCallSpan(ctx, h.tp, h.name, req.Method, tool)
+		spanCtx, span = tracing.StartCallSpan(spanCtx, h.tp, h.name, req.Method, tool)
 	}
 
 	start := time.Now()
-	resp, callErr := h.client.Call(ctx, version, &req, r.Header.Get("Authorization"))
+	resp, callErr := h.client.Call(spanCtx, version, &req, authHeader)
 	duration := time.Since(start)
 	logging.LogCall(h.logger, h.name, req.Method, tool, duration, callErr)
 
@@ -178,7 +186,7 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if req.Method == mcp.MethodToolsCall {
 		success := callErr == nil && (resp == nil || resp.Error == nil)
-		if err := h.breaker.RecordResult(r.Context(), h.name, tool, success); err != nil {
+		if err := h.breaker.RecordResult(ctx, h.name, tool, success); err != nil {
 			h.logger.Error("breaker: failed to persist state transition", "error", err)
 		}
 		for _, a := range h.anomaly.Observe(h.name, tool, float64(duration.Milliseconds()), !success) {
@@ -188,7 +196,7 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if callErr == nil && req.Method == mcp.MethodToolsList {
 		h.t1.LearnFromToolsList(resp)
-		if alerts, err := h.pinning.LearnFromToolsList(r.Context(), h.name, resp); err != nil {
+		if alerts, err := h.pinning.LearnFromToolsList(ctx, h.name, resp); err != nil {
 			h.logger.Error("pinning: failed to process tools/list", "error", err)
 		} else {
 			for _, a := range alerts {
@@ -201,10 +209,9 @@ func (h *upstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if callErr != nil {
-		writeResponse(w, mcp.NewErrorResponse(req.ID, mcp.InternalError, "upstream call failed"))
-		return
+		return mcp.NewErrorResponse(req.ID, mcp.InternalError, "upstream call failed")
 	}
-	writeResponse(w, resp)
+	return resp
 }
 
 func writeResponse(w http.ResponseWriter, resp *mcp.Response) {
