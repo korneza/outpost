@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outpost-config
+data:
+  outpost.yaml: |
+    listen: "0.0.0.0:8080"
+    state_db: "/data/outpost.db"
+    upstreams:
+      - name: example
+        url: "http://example-mcp-server:9000"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outpost
+  labels:
+    app: outpost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outpost
+  template:
+    metadata:
+      labels:
+        app: outpost
+    spec:
+      containers:
+        - name: outpost
+          image: ghcr.io/korneza/outpost:latest
+          args: ["serve", "-config", "/etc/outpost/outpost.yaml"]
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/outpost
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: outpost-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outpost
+spec:
+  selector:
+    app: outpost
+  ports:
+    - port: 8080
+      targetPort: 8080
