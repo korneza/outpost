@@ -30,6 +30,16 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// caller is the minimal interface upstreamHandler needs from whatever it
+// forwards calls to. *upstream.Client satisfies it today (HTTP);
+// *stdioupstream.Caller (see internal/stdioupstream) satisfies it too, for
+// `outpost run`'s stdio wrapper mode — the entire T1/breaker/pinning/
+// cache/anomaly/reporter gate logic in ServeHTTP is transport-agnostic
+// and shouldn't care which one it's talking to.
+type caller interface {
+	Call(ctx context.Context, version mcp.ProtocolVersion, req *mcp.Request, authHeader string) (*mcp.Response, error)
+}
+
 // New builds the proxy's HTTP handler from cfg: one route per configured
 // upstream, at path "/{upstream.Name}". st backs each upstream's circuit
 // breaker and pinning state for persistence. tp is nil-safe: a nil
@@ -82,7 +92,7 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.
 
 type upstreamHandler struct {
 	name     string
-	client   *upstream.Client
+	client   caller
 	logger   *slog.Logger
 	t1       *t1.Validator
 	breaker  *breaker.Breaker
