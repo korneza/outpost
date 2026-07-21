@@ -62,3 +62,35 @@ func TestBufferDropsOldestWhenFull(t *testing.T) {
 		t.Fatalf("buffer should be capped at 2, got %d", got)
 	}
 }
+
+func TestReporterBufferStaysBoundedUnderSustainedConcurrentLoad(t *testing.T) {
+	const bufCap = 16
+	r := New("http://127.0.0.1:1", bufCap) // closed port: every send fails
+
+	var wg sync.WaitGroup
+	for g := 0; g < 20; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				r.ReportPin(report.PinEvent{ToolName: "t"})
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("4000 concurrent ReportPin calls must not hang or deadlock")
+	}
+
+	r.Flush()
+	if got := r.BufferedCount(); got > bufCap {
+		t.Fatalf("buffer exceeded its cap of %d under sustained load: got %d", bufCap, got)
+	}
+}
