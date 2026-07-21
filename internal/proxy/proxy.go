@@ -90,6 +90,43 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.
 	return mux, nil
 }
 
+// NewSingle builds one upstreamHandler wired the same way New wires each
+// per-upstream handler, for callers that don't want an HTTP mux — the
+// stdio wrapper mode (cmd/outpost's "run" command) drives this directly
+// from its own stdin/stdout read loop instead of over HTTP.
+func NewSingle(name string, c caller, cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.TracerProvider) (*Handler, error) {
+	p := pinning.New(st)
+	if err := p.Hydrate(context.Background()); err != nil {
+		logger.Error("pinning: failed to hydrate drift state from store", "upstream", name, "error", err)
+	}
+	var rep *reporter.Reporter
+	if cfg.ControlPlaneURL != "" {
+		rep = reporter.New(cfg.ControlPlaneURL, 256)
+	}
+	return &Handler{h: &upstreamHandler{
+		name:     name,
+		client:   c,
+		logger:   logger,
+		t1:       t1.New(),
+		breaker:  breaker.New(st, breaker.DefaultConfig()),
+		pinning:  p,
+		anomaly:  anomaly.New(),
+		tools:    cfg.Tools,
+		tp:       tp,
+		reporter: rep,
+	}}, nil
+}
+
+// Handler exposes upstreamHandler.handle to callers outside this package
+// (the stdio wrapper mode) without exporting upstreamHandler itself.
+type Handler struct{ h *upstreamHandler }
+
+// Handle runs one JSON-RPC request through the full gate. See
+// upstreamHandler.handle for what that means.
+func (h *Handler) Handle(ctx context.Context, body []byte, authHeader, protocolVersionHeader string) *mcp.Response {
+	return h.h.handle(ctx, body, authHeader, protocolVersionHeader)
+}
+
 type upstreamHandler struct {
 	name     string
 	client   caller
