@@ -10,6 +10,15 @@
 // backing one outpost run invocation doesn't need concurrent in-flight
 // request support to be useful, and correlating by id to support that
 // safely is a real, separate piece of work.
+//
+// Known limitation, documented rather than silently accepted: Call skips
+// reading a response for a notification (correct per JSON-RPC 2.0 — a
+// spec-compliant server never sends one). A non-compliant or actively
+// hostile child that responds to a notification anyway would leave a
+// stray line buffered, which the next real Call would then misread as
+// its own response. Not defended against — the child process being
+// wrapped is real, untrusted input (matching this product's own threat
+// model), but full desync recovery is out of scope for this first cut.
 package stdioupstream
 
 import (

@@ -22,6 +22,13 @@ func main() {
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 			continue
 		}
+		if len(req.ID) == 0 {
+			// JSON-RPC 2.0: a message with no id is a notification and
+			// MUST NOT receive a response. A spec-compliant test fixture
+			// needs to actually behave this way — real MCP servers do,
+			// and stdioupstream.Caller.Call relies on that being true.
+			continue
+		}
 		resp := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      json.RawMessage(req.ID),
