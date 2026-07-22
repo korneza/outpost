@@ -52,7 +52,15 @@ Outpost listens on the configured address and exposes one route per upstream, at
 
 Prefer stdio over HTTP? `outpost run -- <server-cmd> [args...]` spawns the given MCP server as a child process and wraps its stdio with the same T1/breaker/pinning/cache/anomaly gate — no separate proxy process to run.
 
-This is pre-`v0.9.0`. Today's binary proxies, negotiates protocol version, structurally validates `tools/call` arguments, trips a circuit breaker on repeated tool failures, caches `tools/list`/`resources/read` per upstream (`tools/call` is structurally uncacheable), detects (and optionally blocks) tool-definition drift, flags statistical anomalies in latency and error rate, and exports an OTel span per call. All 8 binary-side features from the 30-day plan's Week 2 scope are complete (`v0.8.0-alpha`). A [TypeScript client shim](clients/typescript/) provides the direct-connection fallback mentioned above. A control-plane skeleton (`outpost-cloud`) can now scan drifted tool definitions and dispatch alerts, but it isn't deployed anywhere — see that repo's README for what's real vs. still deferred. Deploy-ready (not deployed) packaging exists for [Kubernetes](deploy/k8s/) and [Homebrew](packaging/homebrew/); a [chaos/soak harness](internal/chaos/) and [`cmd/soaktest`](cmd/soaktest/) back the resilience claims above.
+This is pre-`v0.9.0`. Today's binary proxies, negotiates protocol version, structurally validates `tools/call` arguments, trips a circuit breaker on repeated tool failures, caches `tools/list`/`resources/read` per upstream (`tools/call` is structurally uncacheable), detects (and optionally blocks) tool-definition drift, flags statistical anomalies in latency and error rate, and exports an OTel span per call. All 8 binary-side features from the 30-day plan's Week 2 scope are complete (`v0.8.0-alpha`). [TypeScript](clients/typescript/) and [Python](clients/python/) client shims provide the direct-connection fallback mentioned above. A control-plane skeleton (`outpost-cloud`) can now scan drifted tool definitions and dispatch alerts behind optional API-key auth, but it isn't deployed anywhere — see that repo's README for what's real vs. still deferred. Deploy-ready (not deployed) packaging exists for [Kubernetes](deploy/k8s/) and [Homebrew](packaging/homebrew/); a [chaos/soak harness](internal/chaos/) and [`cmd/soaktest`](cmd/soaktest/) back the resilience claims above.
+
+## Docs
+
+- [Quickstart](docs/quickstart.md) — build, configure, run, verify in 5 minutes
+- [Architecture](docs/architecture.md) — every subsystem, and the real request-flow gate order
+- [Configuration reference](docs/configuration.md) — every config field, with a complete example
+- [Threat model](docs/threat-model.md) — what Outpost defends against, what it doesn't, and the two real findings from our own security review
+- [What happens if Outpost goes down](docs/if-outpost-goes-down.md) — the honest answer, including the current stdio-mode gap
 
 ## Contributing
 
