@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -59,9 +60,50 @@ func TestRunServeFailsCleanlyOnMissingConfig(t *testing.T) {
 	}
 	defer stderr.Close()
 
-	code := runServe(filepath.Join(t.TempDir(), "does-not-exist.yaml"), stdout, stderr)
+	code := runServe(context.Background(), filepath.Join(t.TempDir(), "does-not-exist.yaml"), stdout, stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
+	}
+}
+
+func TestRunServeShutsDownGracefullyWhenContextCancelled(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "outpost.yaml")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	cfgYAML := "listen: \"127.0.0.1:0\"\nstate_db: \"" + filepath.ToSlash(filepath.Join(t.TempDir(), "outpost.db")) + "\"\nupstreams:\n  - name: files\n    url: \"" + upstream.URL + "\"\n"
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan int, 1)
+	go func() {
+		done <- runServe(ctx, configPath, &stdout, &stderr)
+	}()
+
+	// Give the listener goroutine a moment to actually start serving
+	// before triggering shutdown — runServe returns 0 either way, but a
+	// premature cancel would trivially "pass" without exercising the
+	// real shutdown path this test is for.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0 (graceful shutdown), stderr = %s", code, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServe did not return within 5s of context cancellation")
+	}
+
+	if !strings.Contains(stdout.String(), "shutting down") {
+		t.Fatalf("expected a 'shutting down' log line, stdout = %s", stdout.String())
 	}
 }
 

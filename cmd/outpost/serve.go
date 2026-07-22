@@ -6,9 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/korneza/outpost/internal/config"
@@ -59,10 +56,13 @@ func newServer(cfg *config.Config, logger *slog.Logger, traceWriter io.Writer) (
 	return srv, st, nil
 }
 
-// runServe loads configPath, starts the proxy server, and blocks until an
-// interrupt or terminate signal triggers a graceful shutdown. It returns a
-// process exit code.
-func runServe(configPath string, stdout, stderr *os.File) int {
+// runServe loads configPath, starts the proxy server, and blocks until ctx
+// is cancelled, at which point it shuts down gracefully. It returns a
+// process exit code. ctx is the caller's to construct — main wires it to
+// OS interrupt/terminate signals; tests can cancel it directly, which is
+// what actually exercises the graceful-shutdown path (OS signal delivery
+// isn't reliably testable cross-platform, notably on Windows).
+func runServe(ctx context.Context, configPath string, stdout, stderr io.Writer) int {
 	logger := logging.New(stdout)
 
 	cfg, err := config.Load(configPath)
@@ -77,9 +77,6 @@ func runServe(configPath string, stdout, stderr *os.File) int {
 		return 1
 	}
 	defer st.Close()
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
