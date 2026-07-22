@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -345,7 +346,8 @@ func TestServeEndToEndRugPullSimulation(t *testing.T) {
 }
 
 func TestServeEndToEndDetectsLatencyAnomaly(t *testing.T) {
-	var callNum int
+	var mu sync.Mutex
+	var injectedDelay time.Duration // zero (no delay) until set after the baseline calls below
 	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req mcp.Request
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -354,15 +356,11 @@ func TestServeEndToEndDetectsLatencyAnomaly(t *testing.T) {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
 			return
 		}
-		callNum++
-		if callNum > 25 {
-			// Large enough to stay a clear 3-stddev outlier even under a
-			// heavily loaded/contended CI runner (-race inflates scheduling
-			// jitter on the 25 "normal" baseline calls too — a 50ms margin
-			// measured flaky under -race + CPU-constrained CI; reproduced
-			// locally via Docker with --cpus=2 to match GitHub's runner
-			// shape before picking this value).
-			time.Sleep(750 * time.Millisecond)
+		mu.Lock()
+		d := injectedDelay
+		mu.Unlock()
+		if d > 0 {
+			time.Sleep(d)
 		}
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"content":"ok"}}`))
 	}))
@@ -382,17 +380,66 @@ func TestServeEndToEndDetectsLatencyAnomaly(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	for i := 0; i < 26; i++ {
+	call := func() {
 		resp, err := http.Post(srv.URL+"/files", "application/json", strings.NewReader(
 			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"files.read","arguments":{}}}`,
 		))
 		if err != nil {
-			t.Fatalf("call %d: %v", i, err)
+			t.Fatalf("call: %v", err)
 		}
 		resp.Body.Close()
 	}
 
+	for i := 0; i < 25; i++ {
+		call()
+	}
+
+	// Derive the injected "slow call" delay from what the proxy itself
+	// actually measured for the 25 baseline calls above (parsed from its
+	// own log — the exact same duration anomaly.Observe compares
+	// against), rather than a fixed constant or a delay measured on the
+	// wrong side of the connection. A fixed constant (first 50ms, then
+	// 750ms) flaked repeatedly under -race + CPU-constrained CI: real
+	// wall-clock jitter on the proxy's client-observed round trip has
+	// been measured exceeding 1s under sustained contention, and an
+	// earlier attempt to make this "adaptive" measured latency inside
+	// the fake upstream's own handler — which stays near-zero even
+	// under heavy contention, since almost all the jitter happens in
+	// the surrounding HTTP/TCP/scheduling layers, not the handler's own
+	// code. Scaling to what the proxy itself logged keeps the injected
+	// call a clear outlier regardless of machine load.
+	maxBaseline := maxLoggedCallDuration(t, logBuf.String())
+	mu.Lock()
+	injectedDelay = maxBaseline*10 + 500*time.Millisecond
+	mu.Unlock()
+
+	call()
+
 	if !strings.Contains(logBuf.String(), "statistical anomaly detected") {
 		t.Fatalf("expected a statistical anomaly log entry after the 26th (slow) call over the real listener; log = %s", logBuf.String())
 	}
+}
+
+// maxLoggedCallDuration parses every JSON log line's "duration" field
+// (nanoseconds, as internal/logging.LogCall's slog.Duration attribute
+// serializes it) and returns the largest one seen — the same quantity
+// the proxy's own anomaly detection compares against.
+func maxLoggedCallDuration(t *testing.T, log string) time.Duration {
+	t.Helper()
+	var maxDuration time.Duration
+	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Duration int64 `json:"duration"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if d := time.Duration(entry.Duration); d > maxDuration {
+			maxDuration = d
+		}
+	}
+	return maxDuration
 }
