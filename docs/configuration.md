@@ -9,6 +9,7 @@ Outpost reads a single YAML file, passed via `outpost serve -config <path>` (def
 | `Listen` | `listen` | string | **yes** | — | Address Outpost listens on, e.g. `"127.0.0.1:8100"`. |
 | `StateDB` | `state_db` | string | no | `"outpost.db"` | Path to the SQLite state file (pins, drift history, breaker state). |
 | `ControlPlaneURL` | `control_plane_url` | string | no | `""` (disabled) | Base URL of an optional hosted control plane. Empty means no reporting at all — `internal/reporter` is never constructed. |
+| `ControlPlaneAPIKey` | `control_plane_api_key` | string | no | `""` | Sent as `Authorization: Bearer <key>` on every report. **Must match the control plane's own `CONTROL_PLANE_API_KEY`** if that's set — if the control plane has auth enabled and this is left empty, every report is silently 401'd and dropped (fail-silent by design; nothing will tell you this is happening except an empty `drift_events` table on the control-plane side). Ignored entirely if `control_plane_url` is unset. |
 | `Upstreams` | `upstreams` | list of [Upstream](#upstream) | **yes**, at least one | — | One route per entry, at `/{name}`. |
 | `Tools` | `tools` | map of tool name → [ToolOverride](#tooloverride) | no | `{}` | Per-tool opt-in overrides. Keyed by the tool's `name` as declared in its MCP definition, not the upstream name. |
 
@@ -67,6 +68,7 @@ The **control plane** (`outpost-cloud`, separate repo/binary) reads its own envi
 listen: "0.0.0.0:8100"
 state_db: "/var/lib/outpost/outpost.db"
 control_plane_url: "https://control-plane.internal.example.com"
+control_plane_api_key: "match-the-control-plane's-CONTROL_PLANE_API_KEY-exactly"
 
 upstreams:
   - name: files
