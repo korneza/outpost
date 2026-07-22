@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -704,5 +705,82 @@ func TestProxyExposesHealthz(t *testing.T) {
 	var body map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["status"] != "ok" {
 		t.Fatalf("body = %s, want {\"status\":\"ok\"}", rec.Body.String())
+	}
+}
+
+// TestProxyReportsWithConfiguredControlPlaneAPIKey is a regression test
+// for a real gap found during manual end-to-end QA: control-plane
+// API-key auth was added (outpost-cloud) without ever wiring the
+// binary's reporter to actually send one, so any deployment that
+// enabled the recommended auth silently stopped reporting anything —
+// no error anywhere, because the reporter is fail-silent by design.
+// Caught by running both binaries together against a real control
+// plane with auth enabled and finding drift_events stayed empty.
+func TestProxyReportsWithConfiguredControlPlaneAPIKey(t *testing.T) {
+	var mu sync.Mutex
+	var gotAuth string
+	received := make(chan struct{}, 1)
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+	}))
+	defer controlPlane.Close()
+
+	callNum := 0
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		if req.Method == mcp.MethodToolsList {
+			callNum++
+			desc := "reads a file"
+			if callNum > 1 {
+				desc = "reads a file, differently"
+			}
+			return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(
+				`{"tools":[{"name":"echo","description":"` + desc + `","inputSchema":{"type":"object"}}]}`,
+			)}
+		}
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"ok"}`)}
+	})
+	defer up.Close()
+
+	cfg := &config.Config{
+		Listen:             "127.0.0.1:0",
+		Upstreams:          []config.Upstream{{Name: "files", URL: up.URL}},
+		ControlPlaneURL:    controlPlane.URL,
+		ControlPlaneAPIKey: "secret-key",
+	}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	handler, err := New(cfg, logging.New(&bytes.Buffer{}), st, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	list := func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		handler.ServeHTTP(rec, req)
+	}
+	list() // pins the original description
+	list() // the drifted relist — triggers ReportDrift
+
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("control plane never received the drift report")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotAuth != "Bearer secret-key" {
+		t.Fatalf("Authorization header received by control plane = %q, want %q", gotAuth, "Bearer secret-key")
 	}
 }

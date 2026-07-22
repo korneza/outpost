@@ -51,7 +51,7 @@ func New(cfg *config.Config, logger *slog.Logger, st *store.Store, tp *sdktrace.
 	}
 	var rep *reporter.Reporter
 	if cfg.ControlPlaneURL != "" {
-		rep = reporter.New(cfg.ControlPlaneURL, 256)
+		rep = reporter.New(cfg.ControlPlaneURL, cfg.ControlPlaneAPIKey, 256)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -101,7 +101,7 @@ func NewSingle(name string, c caller, cfg *config.Config, logger *slog.Logger, s
 	}
 	var rep *reporter.Reporter
 	if cfg.ControlPlaneURL != "" {
-		rep = reporter.New(cfg.ControlPlaneURL, 256)
+		rep = reporter.New(cfg.ControlPlaneURL, cfg.ControlPlaneAPIKey, 256)
 	}
 	return &Handler{h: &upstreamHandler{
 		name:     name,

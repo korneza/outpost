@@ -94,6 +94,13 @@ func TestLoadRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestLoadReadsControlPlaneAPIKey(t *testing.T) {
+	cfg := writeAndLoad(t, "listen: \"127.0.0.1:8100\"\nupstreams:\n  - name: files\n    url: \"http://x\"\ncontrol_plane_url: \"https://cp.example.com\"\ncontrol_plane_api_key: \"secret\"\n")
+	if cfg.ControlPlaneAPIKey != "secret" {
+		t.Fatalf("ControlPlaneAPIKey = %q, want %q", cfg.ControlPlaneAPIKey, "secret")
+	}
+}
+
 func writeAndLoad(t *testing.T, body string) *Config {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "outpost.yaml")

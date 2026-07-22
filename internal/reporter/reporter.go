@@ -18,15 +18,22 @@ import (
 
 type Reporter struct {
 	url    string
+	apiKey string
 	client *http.Client
 	mu     sync.Mutex
 	queue  [][]byte
 	cap    int
 }
 
-func New(controlPlaneURL string, bufferCap int) *Reporter {
+// New returns a Reporter targeting controlPlaneURL. apiKey, if non-empty,
+// is sent as "Authorization: Bearer <apiKey>" on every request — matching
+// the control plane's own optional CONTROL_PLANE_API_KEY auth (empty
+// disables it there too, so an empty apiKey here is the correct default
+// against an unauthenticated control plane, not just a placeholder).
+func New(controlPlaneURL, apiKey string, bufferCap int) *Reporter {
 	return &Reporter{
 		url:    controlPlaneURL,
+		apiKey: apiKey,
 		client: &http.Client{Timeout: 2 * time.Second},
 		cap:    bufferCap,
 	}
@@ -85,7 +92,15 @@ func (r *Reporter) drain() {
 			continue
 		}
 		path, body := string(item[:idx]), item[idx+1:]
-		resp, err := r.client.Post(r.url+path, "application/json", bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, r.url+path, bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if r.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+r.apiKey)
+		}
+		resp, err := r.client.Do(req)
 		if err != nil {
 			continue
 		}

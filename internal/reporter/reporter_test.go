@@ -23,7 +23,7 @@ func TestReportPinPostsToControlPlane(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := New(srv.URL, 10)
+	r := New(srv.URL, "", 10)
 	r.ReportPin(report.PinEvent{Upstream: "up1", ToolName: "echo", SchemaHash: "abc"})
 	r.Flush()
 
@@ -38,8 +38,54 @@ func TestReportPinPostsToControlPlane(t *testing.T) {
 	}
 }
 
+func TestReportSendsAuthorizationHeaderWhenAPIKeyConfigured(t *testing.T) {
+	var mu sync.Mutex
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	r := New(srv.URL, "secret-key", 10)
+	r.ReportPin(report.PinEvent{ToolName: "echo"})
+	r.Flush()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotAuth != "Bearer secret-key" {
+		t.Fatalf("Authorization header = %q, want %q", gotAuth, "Bearer secret-key")
+	}
+}
+
+func TestReportOmitsAuthorizationHeaderWhenAPIKeyNotConfigured(t *testing.T) {
+	var mu sync.Mutex
+	sawAuthHeader := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.Header.Get("Authorization") != "" {
+			sawAuthHeader = true
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	r := New(srv.URL, "", 10)
+	r.ReportPin(report.PinEvent{ToolName: "echo"})
+	r.Flush()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if sawAuthHeader {
+		t.Fatal("expected no Authorization header when no API key is configured")
+	}
+}
+
 func TestReportPinNeverBlocksWhenControlPlaneIsDown(t *testing.T) {
-	r := New("http://127.0.0.1:1", 10) // closed port: nothing listens
+	r := New("http://127.0.0.1:1", "", 10) // closed port: nothing listens
 	done := make(chan struct{})
 	go func() {
 		r.ReportPin(report.PinEvent{Upstream: "up1", ToolName: "echo"})
@@ -54,7 +100,7 @@ func TestReportPinNeverBlocksWhenControlPlaneIsDown(t *testing.T) {
 }
 
 func TestBufferDropsOldestWhenFull(t *testing.T) {
-	r := New("http://127.0.0.1:1", 2)
+	r := New("http://127.0.0.1:1", "", 2)
 	for i := 0; i < 5; i++ {
 		r.ReportPin(report.PinEvent{ToolName: "t"})
 	}
@@ -65,7 +111,7 @@ func TestBufferDropsOldestWhenFull(t *testing.T) {
 
 func TestReporterBufferStaysBoundedUnderSustainedConcurrentLoad(t *testing.T) {
 	const bufCap = 16
-	r := New("http://127.0.0.1:1", bufCap) // closed port: every send fails
+	r := New("http://127.0.0.1:1", "", bufCap) // closed port: every send fails
 
 	var wg sync.WaitGroup
 	for g := 0; g < 20; g++ {
