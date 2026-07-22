@@ -78,9 +78,16 @@ func runServe(ctx context.Context, configPath string, stdout, stderr io.Writer) 
 	}
 	defer st.Close()
 
+	// Printed synchronously, before the goroutine below exists, so this
+	// is the only write in flight — no concurrent-write race with
+	// anything else touching stdout (found via -race on a test using a
+	// real, non-OS-backed writer; os.Stdout tolerates this in practice
+	// since individual small Write syscalls don't corrupt each other,
+	// but that's incidental, not a guarantee).
+	fmt.Fprintf(stdout, "%s\nlistening on %s\n", version.String(), cfg.Listen)
+
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(stdout, "%s\nlistening on %s\n", version.String(), cfg.Listen)
 		errCh <- srv.ListenAndServe()
 	}()
 

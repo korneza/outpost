@@ -78,7 +78,16 @@ func TestRunServeShutsDownGracefullyWhenContextCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var stdout, stderr bytes.Buffer
+	// A plain *bytes.Buffer isn't safe for this test: runServe's real
+	// codepath enables OTel tracing (newServer passes stdout through as
+	// the trace writer), and http.Server.Shutdown's RegisterOnShutdown
+	// hooks — including the tracer provider's own shutdown/flush — run
+	// asynchronously and are not guaranteed to have finished by the time
+	// Shutdown, and therefore runServe, returns. A mutex-protected
+	// writer keeps this test race-free regardless of exactly when those
+	// background writes land, without depending on internal timing
+	// details of net/http or the OTel SDK.
+	var stdout, stderr syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan int, 1)
@@ -484,4 +493,25 @@ func maxLoggedCallDuration(t *testing.T, log string) time.Duration {
 		}
 	}
 	return maxDuration
+}
+
+// syncBuffer is a mutex-protected bytes.Buffer for tests that read a
+// log/trace buffer while a background goroutine (or an async shutdown
+// hook) may still be writing to it — a plain bytes.Buffer is explicitly
+// documented as unsafe for concurrent use and -race will catch that.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
