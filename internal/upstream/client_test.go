@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/korneza/outpost/internal/mcp"
@@ -110,6 +111,54 @@ func TestCallReturnsErrorOnUnreachableUpstream(t *testing.T) {
 	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
 	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req, ""); err == nil {
 		t.Fatal("expected an error calling an unreachable upstream, got nil")
+	}
+}
+
+// TestCallRejectsOversizedResponseBody guards against Claude Security
+// findings F5/F16: resp.Body was read in full with io.ReadAll and no
+// size cap, so a hostile or compromised upstream could force Outpost to
+// buffer an arbitrarily large response before any check ran, exhausting
+// memory. maxResponseBytes is a package var here specifically so the
+// test doesn't need to actually transfer tens of megabytes to prove the
+// cap holds.
+func TestCallRejectsOversizedResponseBody(t *testing.T) {
+	orig := maxResponseBytes
+	maxResponseBytes = 100
+	t.Cleanup(func() { maxResponseBytes = orig })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"` + strings.Repeat("a", 1000) + `"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
+	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req, ""); err == nil {
+		t.Fatal("expected an error for a response body over the size cap, got nil")
+	}
+}
+
+// TestCallAcceptsResponseAtCap confirms the cap doesn't clip a
+// legitimate response sitting right at the limit.
+func TestCallAcceptsResponseAtCap(t *testing.T) {
+	orig := maxResponseBytes
+	maxResponseBytes = 1000
+	t.Cleanup(func() { maxResponseBytes = orig })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prefix := `{"jsonrpc":"2.0","id":1,"result":"`
+		suffix := `"}`
+		padding := int(maxResponseBytes) - len(prefix) - len(suffix)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(prefix + strings.Repeat("a", padding) + suffix))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
+	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req, ""); err != nil {
+		t.Fatalf("Call: %v, want a response exactly at the cap to still succeed", err)
 	}
 }
 

@@ -5,7 +5,18 @@ export interface OutpostClientOptions {
   directUrl: string;
   /** Per-attempt timeout in milliseconds. Defaults to 3000. */
   timeoutMs?: number;
+  /**
+   * Maximum response body size in bytes. Defaults to 10 MiB — generous
+   * for a real tool-call result while still bounding the worst case.
+   * Matters most on the direct-fallback path: that path talks to the
+   * upstream with none of Outpost's own protections in effect, so a
+   * malicious or compromised upstream there is unconstrained except by
+   * what this client does itself.
+   */
+  maxResponseBytes?: number;
 }
+
+const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -33,11 +44,13 @@ export class OutpostClient {
   private readonly proxyUrl: string;
   private readonly directUrl: string;
   private readonly timeoutMs: number;
+  private readonly maxResponseBytes: number;
 
   constructor(options: OutpostClientOptions) {
     this.proxyUrl = options.proxyUrl;
     this.directUrl = options.directUrl;
     this.timeoutMs = options.timeoutMs ?? 3000;
+    this.maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   }
 
   async call(request: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -65,9 +78,46 @@ export class OutpostClient {
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
-      return (await res.json()) as JsonRpcResponse;
+      const text = await readBounded(res, this.maxResponseBytes);
+      return JSON.parse(text) as JsonRpcResponse;
     } finally {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * Reads res's body in chunks, throwing rather than buffering past
+ * maxBytes. res.json()/res.text() read the whole body in one call,
+ * trusting the far end not to send something absurd — the upstream
+ * (direct or through the proxy) is untrusted by this client's own
+ * threat model, so this stops the moment the total would exceed
+ * maxBytes instead.
+ */
+async function readBounded(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body) {
+    return "";
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`response exceeds ${maxBytes} byte limit`);
+      }
+      chunks.push(value);
+    }
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(combined);
 }

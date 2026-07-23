@@ -14,6 +14,18 @@ import (
 	"github.com/korneza/outpost/internal/mcp"
 )
 
+// maxResponseBytes bounds how much of an upstream's HTTP response body
+// Call will buffer into memory. The configured upstream is exactly the
+// kind of actor Outpost's own threat model treats as potentially
+// malicious or compromised (see docs/threat-model.md) — without a cap,
+// a hostile upstream streaming an arbitrarily large body forces
+// unbounded memory allocation before any status or JSON check runs
+// (Claude Security findings F5/F16). It's a package var, not a const,
+// only so tests can shrink it instead of transferring tens of megabytes.
+// 10 MiB is generous for a real tool-call result (including a modest
+// embedded file or image) while still bounding the worst case.
+var maxResponseBytes int64 = 10 << 20
+
 // Client calls one upstream MCP server. A Client is safe for concurrent use.
 type Client struct {
 	baseURL    string
@@ -67,9 +79,12 @@ func (c *Client) Call(ctx context.Context, version mcp.ProtocolVersion, req *mcp
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("upstream: read response: %w", err)
+	}
+	if int64(len(data)) > maxResponseBytes {
+		return nil, fmt.Errorf("upstream: response exceeds %d byte limit", maxResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("upstream: unexpected status %d: %s", resp.StatusCode, data)

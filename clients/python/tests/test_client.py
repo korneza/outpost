@@ -75,6 +75,64 @@ class TestOutpostClient(unittest.TestCase):
         direct.shutdown()
         direct.server_close()
 
+    def test_call_rejects_oversized_response_body(self):
+        # Claude Security finding F20: _post_json read the entire
+        # response with resp.read() and no size cap, so a malicious or
+        # compromised upstream (notably reachable on the direct-fallback
+        # path, where Outpost's own protections are bypassed by design)
+        # could force the agent process to buffer an arbitrarily large
+        # body. max_response_bytes is tiny here so the test doesn't need
+        # to actually transfer megabytes to prove the cap holds.
+        def make_oversized_server():
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    length = int(self.headers.get("Content-Length", 0))
+                    self.rfile.read(length)
+                    body = json.dumps(
+                        {"jsonrpc": "2.0", "id": 1, "result": "a" * 1000}
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, fmt, *args):
+                    pass
+
+            server = HTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            return server
+
+        proxy = make_oversized_server()
+        try:
+            client = OutpostClient(
+                proxy_url=f"http://127.0.0.1:{proxy.server_port}",
+                direct_url="http://127.0.0.1:1",  # unused: proxy responds, no fallback needed
+                timeout_seconds=1.0,
+                max_response_bytes=100,
+            )
+            with self.assertRaises(Exception):
+                client.call({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+
+    def test_call_accepts_response_at_cap(self):
+        proxy = make_server("proxy")
+        try:
+            client = OutpostClient(
+                proxy_url=f"http://127.0.0.1:{proxy.server_port}",
+                direct_url="http://127.0.0.1:1",
+                timeout_seconds=1.0,
+                max_response_bytes=10 * 1024 * 1024,
+            )
+            resp = client.call({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            self.assertEqual(resp["result"], {"via": "proxy"})
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

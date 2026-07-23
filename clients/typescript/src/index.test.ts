@@ -70,3 +70,51 @@ test("call() falls back to direct connection when the proxy is killed mid-run", 
 
   await direct.close();
 });
+
+test("call() rejects an oversized response body", async () => {
+  // Same class of gap as the Go and Python clients' F5/F16/F20 fixes:
+  // res.json() read the entire response with no size cap, so a
+  // malicious or compromised upstream (most reachable on the direct-
+  // fallback path, where Outpost's own protections don't apply) could
+  // force the calling process to buffer an arbitrarily large body.
+  // maxResponseBytes is tiny here so the test doesn't need to actually
+  // transfer megabytes to prove the cap holds.
+  const proxy = await startServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "a".repeat(1000) }));
+  });
+
+  const client = new OutpostClient({
+    proxyUrl: proxy.url,
+    directUrl: "http://127.0.0.1:1",
+    timeoutMs: 1000,
+    maxResponseBytes: 100,
+  });
+
+  await assert.rejects(() => client.call({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+
+  await proxy.close();
+});
+
+test("call() accepts a response exactly at the size cap", async () => {
+  const cap = 1000;
+  const proxy = await startServer((_req, res) => {
+    const prefix = '{"jsonrpc":"2.0","id":1,"result":"';
+    const suffix = '"}';
+    const padding = cap - prefix.length - suffix.length;
+    res.setHeader("Content-Type", "application/json");
+    res.end(prefix + "a".repeat(padding) + suffix);
+  });
+
+  const client = new OutpostClient({
+    proxyUrl: proxy.url,
+    directUrl: "http://127.0.0.1:1",
+    timeoutMs: 1000,
+    maxResponseBytes: cap,
+  });
+
+  const resp = await client.call({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.equal(resp.result, "a".repeat(cap - '{"jsonrpc":"2.0","id":1,"result":"'.length - '"}'.length));
+
+  await proxy.close();
+});
