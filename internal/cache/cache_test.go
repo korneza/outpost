@@ -9,7 +9,7 @@ import (
 
 func TestKeyRejectsToolsCallByConstruction(t *testing.T) {
 	c := New(time.Minute)
-	_, ok := c.Key(mcp.MethodToolsCall, "up1", []byte(`{"name":"x"}`))
+	_, ok := c.Key(mcp.MethodToolsCall, "up1", []byte(`{"name":"x"}`), "")
 	if ok {
 		t.Fatal("Key must never mint a cache key for tools/call")
 	}
@@ -18,7 +18,7 @@ func TestKeyRejectsToolsCallByConstruction(t *testing.T) {
 func TestKeyAcceptsToolsListAndResourcesRead(t *testing.T) {
 	c := New(time.Minute)
 	for _, method := range []string{mcp.MethodToolsList, mcp.MethodResourcesRead} {
-		if _, ok := c.Key(method, "up1", nil); !ok {
+		if _, ok := c.Key(method, "up1", nil, ""); !ok {
 			t.Fatalf("Key(%s, ...) should mint a key", method)
 		}
 	}
@@ -26,7 +26,7 @@ func TestKeyAcceptsToolsListAndResourcesRead(t *testing.T) {
 
 func TestSetThenGetReturnsStoredResponse(t *testing.T) {
 	c := New(time.Minute)
-	key, _ := c.Key(mcp.MethodToolsList, "up1", nil)
+	key, _ := c.Key(mcp.MethodToolsList, "up1", nil, "")
 	c.Set(key, []byte(`{"tools":[]}`))
 	got, ok := c.Get(key)
 	if !ok || string(got) != `{"tools":[]}` {
@@ -36,7 +36,7 @@ func TestSetThenGetReturnsStoredResponse(t *testing.T) {
 
 func TestGetExpiresAfterTTL(t *testing.T) {
 	c := New(10 * time.Millisecond)
-	key, _ := c.Key(mcp.MethodToolsList, "up1", nil)
+	key, _ := c.Key(mcp.MethodToolsList, "up1", nil, "")
 	c.Set(key, []byte(`{}`))
 	time.Sleep(20 * time.Millisecond)
 	if _, ok := c.Get(key); ok {
@@ -46,10 +46,41 @@ func TestGetExpiresAfterTTL(t *testing.T) {
 
 func TestKeyDiffersByUpstreamAndParams(t *testing.T) {
 	c := New(time.Minute)
-	k1, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"a"}`))
-	k2, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"b"}`))
-	k3, _ := c.Key(mcp.MethodResourcesRead, "up2", []byte(`{"uri":"a"}`))
+	k1, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"a"}`), "")
+	k2, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"b"}`), "")
+	k3, _ := c.Key(mcp.MethodResourcesRead, "up2", []byte(`{"uri":"a"}`), "")
 	if k1 == k2 || k1 == k3 {
 		t.Fatal("keys must differ by params and upstream")
+	}
+}
+
+// TestKeyDiffersByCallerIdentity is the fix for the cache cross-caller
+// leak (Claude Security findings F2/F12/F13/F15): two callers presenting
+// different Authorization headers for the identical method/upstream/
+// params must never collide on the same cache key, or a caller-scoped
+// (authorization-gated) response from one caller would be served
+// straight back to a different, unauthorized caller within the TTL.
+func TestKeyDiffersByCallerIdentity(t *testing.T) {
+	c := New(time.Minute)
+	kA, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"a"}`), "Bearer token-a")
+	kB, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"a"}`), "Bearer token-b")
+	kNone, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"a"}`), "")
+	if kA == kB {
+		t.Fatal("two different Authorization headers must not produce the same cache key")
+	}
+	if kA == kNone || kB == kNone {
+		t.Fatal("a caller with credentials must not collide with a caller presenting none")
+	}
+}
+
+// TestKeySameForRepeatedCallerIdentity confirms the fix doesn't break
+// the cache's actual purpose: the SAME caller (same Authorization
+// header) making the same request repeatedly must still hit the cache.
+func TestKeySameForRepeatedCallerIdentity(t *testing.T) {
+	c := New(time.Minute)
+	k1, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"a"}`), "Bearer token-a")
+	k2, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(`{"uri":"a"}`), "Bearer token-a")
+	if k1 != k2 {
+		t.Fatal("identical caller + method + upstream + params must still produce the same key")
 	}
 }

@@ -38,10 +38,21 @@ var cacheableMethods = map[string]bool{
 	mcp.MethodResourcesRead: true,
 }
 
-// Key derives a cache key for method/upstream/params. ok is false for any
-// method other than tools/list or resources/read — most importantly
-// tools/call, which must never be cached (spec §2.2).
-func (c *Cache) Key(method, upstream string, params json.RawMessage) (string, bool) {
+// Key derives a cache key for method/upstream/params/authHeader. ok is
+// false for any method other than tools/list or resources/read — most
+// importantly tools/call, which must never be cached (spec §2.2).
+//
+// authHeader — the caller's forwarded Authorization header — is folded
+// into the key alongside method/upstream/params. Outpost forwards each
+// caller's bearer token to the upstream verbatim and never inspects it
+// (internal/upstream/client.go), which means an upstream may legitimately
+// return caller-scoped, authorization-gated content for the identical
+// method+params. Without the caller's identity in the key, one caller's
+// authorized response would be cached and then served straight back to
+// any other caller — including one with no credentials at all — for the
+// rest of the TTL, bypassing the upstream's own per-request authorization
+// check entirely from within Outpost's trusted-proxy layer.
+func (c *Cache) Key(method, upstream string, params json.RawMessage, authHeader string) (string, bool) {
 	if !cacheableMethods[method] {
 		return "", false
 	}
@@ -51,6 +62,8 @@ func (c *Cache) Key(method, upstream string, params json.RawMessage) (string, bo
 	h.Write([]byte(upstream))
 	h.Write([]byte{0})
 	h.Write(params)
+	h.Write([]byte{0})
+	h.Write([]byte(authHeader))
 	return hex.EncodeToString(h.Sum(nil)), true
 }
 

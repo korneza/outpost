@@ -193,7 +193,7 @@ func (h *upstreamHandler) handle(ctx context.Context, body []byte, authHeader, p
 
 	var cacheKey string
 	if h.cache != nil {
-		if key, ok := h.cache.Key(req.Method, h.name, req.Params); ok {
+		if key, ok := h.cache.Key(req.Method, h.name, req.Params, authHeader); ok {
 			cacheKey = key
 			if cached, hit := h.cache.Get(cacheKey); hit {
 				logging.LogCall(h.logger, h.name, req.Method, tool, 0, nil)

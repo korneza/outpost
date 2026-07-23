@@ -627,6 +627,49 @@ func TestProxyCachesToolsListWithinTTL(t *testing.T) {
 	}
 }
 
+// TestProxyCacheDoesNotLeakAcrossCallerIdentity is the end-to-end proof
+// for the cache cross-caller leak (Claude Security findings F2/F12/F13/
+// F15): a caller-scoped upstream response, cached under one caller's
+// Authorization header, must never be served to a different caller
+// presenting a different (or no) header within the same TTL window.
+func TestProxyCacheDoesNotLeakAcrossCallerIdentity(t *testing.T) {
+	up := fakeUpstreamRaw(t, func(r *http.Request) mcp.Response {
+		var req mcp.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		// A realistic caller-scoped upstream: the response content
+		// depends on the forwarded Authorization header, exactly like a
+		// multi-tenant resources/read endpoint would behave.
+		who := r.Header.Get("Authorization")
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"tools":[{"name":"whoami-` + who + `"}]}`)}
+	})
+	defer up.Close()
+
+	handler := newTestProxyWithCacheTTL(t, up.URL, 10)
+	listAs := func(authHeader string) string {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		handler.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+
+	respA := listAs("Bearer token-a")
+	respB := listAs("Bearer token-b")
+	respNone := listAs("")
+
+	if strings.Contains(respB, "token-a") {
+		t.Fatalf("caller B (token-b) received caller A's cached, credential-scoped response: %s", respB)
+	}
+	if strings.Contains(respNone, "token-a") || strings.Contains(respNone, "token-b") {
+		t.Fatalf("an unauthenticated caller received a credentialed caller's cached response: %s", respNone)
+	}
+	if !strings.Contains(respA, "token-a") || !strings.Contains(respB, "token-b") {
+		t.Fatalf("each caller should see their own upstream response: A=%s B=%s", respA, respB)
+	}
+}
+
 func TestProxyNeverCachesToolsCall(t *testing.T) {
 	calls := 0
 	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
