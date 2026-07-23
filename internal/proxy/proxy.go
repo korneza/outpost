@@ -197,7 +197,16 @@ func (h *upstreamHandler) handle(ctx context.Context, body []byte, authHeader, p
 			cacheKey = key
 			if cached, hit := h.cache.Get(cacheKey); hit {
 				logging.LogCall(h.logger, h.name, req.Method, tool, 0, nil)
-				return &mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: cached}
+				cachedResp := &mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: cached}
+				if req.Method == mcp.MethodToolsList {
+					// Redaction is applied at serve time, not baked into
+					// the cached bytes: IsDrifted state can change (or
+					// first become known via Hydrate) after an entry was
+					// cached, and a cache hit must reflect current
+					// drift state exactly like a fresh fetch does.
+					cachedResp = h.pinning.RedactDrifted(h.name, cachedResp)
+				}
+				return cachedResp
 			}
 		}
 	}
@@ -247,6 +256,9 @@ func (h *upstreamHandler) handle(ctx context.Context, body []byte, authHeader, p
 
 	if callErr != nil {
 		return mcp.NewErrorResponse(req.ID, mcp.InternalError, "upstream call failed")
+	}
+	if req.Method == mcp.MethodToolsList {
+		resp = h.pinning.RedactDrifted(h.name, resp)
 	}
 	return resp
 }
