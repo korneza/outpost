@@ -61,6 +61,20 @@ func (s *Schema) validate(value any, path string, depth int) []string {
 		return []string{fmt.Sprintf("%s: want type %q, got %s", path, s.Type, jsonTypeName(value))}
 	}
 
+	// A schema declaring required/properties/additionalProperties
+	// implies an object shape even without an explicit "type":"object"
+	// (valid JSON Schema). Without this check, a value that isn't a Go
+	// map fell through every branch of the switch below untouched —
+	// none of required/properties/additionalProperties ever ran, since
+	// they lived only inside the map[string]any case, keyed on the
+	// value's runtime type rather than the schema's declared shape.
+	impliesObject := len(s.Required) > 0 || len(s.Properties) > 0 || s.AdditionalProperties != nil
+	if impliesObject {
+		if _, ok := value.(map[string]any); !ok {
+			return []string{fmt.Sprintf("%s: schema requires an object (declares required/properties/additionalProperties), got %s", path, jsonTypeName(value))}
+		}
+	}
+
 	switch v := value.(type) {
 	case map[string]any:
 		for _, req := range s.Required {
@@ -69,11 +83,21 @@ func (s *Schema) validate(value any, path string, depth int) []string {
 			}
 		}
 		for key, val := range v {
-			if propSchema, ok := s.Properties[key]; ok {
-				violations = append(violations, propSchema.validate(val, path+"."+key, depth+1)...)
-			} else if s.AdditionalProperties != nil && !*s.AdditionalProperties {
-				violations = append(violations, fmt.Sprintf("%s: additional property %q is not allowed", path, key))
+			propSchema, ok := s.Properties[key]
+			if !ok {
+				if s.AdditionalProperties != nil && !*s.AdditionalProperties {
+					violations = append(violations, fmt.Sprintf("%s: additional property %q is not allowed", path, key))
+				}
+				continue
 			}
+			if propSchema == nil {
+				// A literal JSON null for a property schema (e.g.
+				// {"properties":{"path":null}}) — degenerate input from
+				// an untrusted upstream. Treated as no constraint for
+				// this key rather than crashing on a nil receiver.
+				continue
+			}
+			violations = append(violations, propSchema.validate(val, path+"."+key, depth+1)...)
 		}
 	case []any:
 		if s.Items != nil {
@@ -122,7 +146,14 @@ func typeMatches(want string, value any) bool {
 	case "null":
 		return value == nil
 	default:
-		return true // unknown declared type: don't block on it
+		// All 7 standard JSON Schema primitive types are handled above.
+		// Reaching here means the schema declared something else
+		// entirely — a typo, or a value crafted by whatever produced
+		// this schema (an untrusted upstream's tools/list response).
+		// Matching everything unconditionally would make an
+		// unrecognized type string a way to bypass type checking
+		// altogether; reject instead.
+		return false
 	}
 }
 

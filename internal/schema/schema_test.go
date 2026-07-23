@@ -130,3 +130,56 @@ func TestValidateChecksEnum(t *testing.T) {
 		t.Fatal("Validate: want an error for a non-enum value, got nil")
 	}
 }
+
+// TestValidateDoesNotPanicOnNullPropertySchema guards against Claude
+// Security finding F8: a literal JSON null for a property in an
+// upstream-controlled inputSchema unmarshals to a nil *Schema with no
+// error. The old code's `if propSchema, ok := s.Properties[key]; ok`
+// only checked map-key presence, not pointer nilness, so it recursed
+// into the nil *Schema and panicked dereferencing its Type field —
+// crashing the goroutine handling the request (and, in stdio mode, the
+// whole process — see cmd/outpost's run command, no recover() anywhere
+// in this repo). This must degrade to "no constraint enforced for that
+// key," never a crash.
+func TestValidateDoesNotPanicOnNullPropertySchema(t *testing.T) {
+	s := mustParse(t, `{"type":"object","properties":{"path":null},"required":[]}`)
+	// Must not panic. Whatever verdict it reaches for the property with
+	// a null schema is secondary to not crashing the process.
+	_ = s.Validate(decode(t, `{"path":"anything"}`))
+}
+
+// TestValidateEnforcesObjectShapeWhenImpliedByPropertiesEvenWithoutType
+// guards against Claude Security finding F19: a schema that declares
+// required/properties/additionalProperties but omits an explicit
+// top-level "type":"object" previously skipped all three checks
+// entirely if the actual value wasn't already a Go map — required-field
+// and additional-property enforcement lived only inside the
+// map[string]any case of a switch keyed on the value's *runtime* type,
+// never the schema's declared shape. A non-object value (e.g. a bare
+// string) sailed through as "valid" even though the schema clearly
+// implies an object.
+func TestValidateEnforcesObjectShapeWhenImpliedByPropertiesEvenWithoutType(t *testing.T) {
+	s := mustParse(t, `{"properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`)
+	if err := s.Validate(decode(t, `"bypass"`)); err == nil {
+		t.Fatal("Validate: want an error — a bare string must not satisfy a schema that declares required/properties/additionalProperties")
+	}
+	// The legitimate object case must still work exactly as before.
+	if err := s.Validate(decode(t, `{"path":"/tmp/x"}`)); err != nil {
+		t.Fatalf("Validate: %v, want nil for a genuinely matching object", err)
+	}
+	if err := s.Validate(decode(t, `{}`)); err == nil {
+		t.Fatal("Validate: want an error for a missing required property, even without an explicit type")
+	}
+}
+
+// TestTypeMatchesRejectsUnrecognizedTypeString guards against the other
+// half of F19: typeMatches's default case returned true for ANY
+// unrecognized type string, meaning a typo'd or attacker-crafted type
+// (anything other than the 7 standard JSON Schema primitives, all of
+// which are already handled above this default) silently matched every
+// value regardless of shape.
+func TestTypeMatchesRejectsUnrecognizedTypeString(t *testing.T) {
+	if typeMatches("not-a-real-type", "anything") {
+		t.Fatal("typeMatches: want false for an unrecognized type string, got true")
+	}
+}
