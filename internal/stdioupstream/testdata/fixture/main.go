@@ -32,7 +32,14 @@ func main() {
 		resp := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      json.RawMessage(req.ID),
-			"result":  map[string]string{"content": "fixture response for " + req.Method},
+			// env_secret lets a test observe exactly what this child's
+			// environment actually contains, without any additional
+			// fixture mode — it's simply the value (or "" if unset) of
+			// whatever env var name the test cares about checking.
+			"result": map[string]string{
+				"content":    "fixture response for " + req.Method,
+				"env_secret": os.Getenv("OUTPOST_TEST_SECRET"),
+			},
 		}
 		out, _ := json.Marshal(resp)
 		fmt.Println(string(out))

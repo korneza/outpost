@@ -32,11 +32,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 
 	"github.com/korneza/outpost/internal/mcp"
 )
+
+// curatedChildEnv returns a minimal environment for a wrapped child
+// process instead of the parent's full one. Leaving exec.Cmd.Env nil
+// means "inherit every environment variable of the outpost process
+// verbatim" (Go's os/exec semantics) — but the wrapped command is real,
+// untrusted input by this package's own stated threat model, and a
+// malicious or supply-chain-compromised one could read os.Environ() and
+// exfiltrate any secret sitting in whatever shell launched outpost
+// (cloud keys, CONTROL_PLANE_API_KEY, CI tokens), entirely outside the
+// stdio channel this package's own gate logic inspects (Claude Security
+// finding F7). Only variables a child process genuinely needs to
+// function at all are passed through.
+func curatedChildEnv() []string {
+	var env []string
+	for _, name := range []string{
+		"PATH",
+		"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+		"TEMP", "TMP", "TMPDIR",
+		"SystemRoot", "SystemDrive", // Windows: DNS/network init can fail without these
+	} {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
+}
 
 type Caller struct {
 	cmd    *exec.Cmd
@@ -50,6 +77,7 @@ type Caller struct {
 // stdin/stdout. The child is started immediately; call Close when done.
 func New(command string, args ...string) (*Caller, error) {
 	cmd := exec.Command(command, args...)
+	cmd.Env = curatedChildEnv()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdioupstream: stdin pipe: %w", err)

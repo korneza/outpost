@@ -153,6 +153,40 @@ func TestCallReturnsErrorOnMalformedChildResponse(t *testing.T) {
 	}
 }
 
+// TestNewDoesNotLeakParentEnvironmentToChild guards against Claude
+// Security finding F7: exec.Command left Cmd.Env nil, so the spawned
+// child inherited every environment variable of the outpost process
+// verbatim — per Go's os/exec semantics, a nil Env means "the parent's
+// full environment." The wrapped command is this package's own stated
+// threat model ("real, untrusted input"); a malicious or
+// supply-chain-compromised one could read os.Environ() and exfiltrate
+// any secret (cloud keys, CONTROL_PLANE_API_KEY, CI tokens) sitting in
+// whatever shell launched outpost, entirely outside the stdio channel
+// this package's own gate logic inspects.
+func TestNewDoesNotLeakParentEnvironmentToChild(t *testing.T) {
+	t.Setenv("OUTPOST_TEST_SECRET", "leaked-value-must-not-reach-child")
+
+	bin := buildFixture(t)
+	c, err := New(bin)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "tools/call"}
+	resp, err := c.Call(context.Background(), mcp.VersionCurrent, req, "")
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result["env_secret"] != "" {
+		t.Fatalf("child saw OUTPOST_TEST_SECRET = %q, want the parent's environment not to be inherited at all", result["env_secret"])
+	}
+}
+
 // TestCallRejectsResponseWithMismatchedID guards against Claude
 // Security findings F3/F4/F18: Call used to trust whatever line it read
 // next as the answer to the request it just sent, with no check that
