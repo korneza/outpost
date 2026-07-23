@@ -4,25 +4,30 @@
 // transport frames messages as newline-delimited JSON with no embedded
 // newlines, matched here on both the write and read side.
 //
-// Calls are serialized with a mutex rather than correlated by JSON-RPC
-// id — a deliberate "first cut" simplification (see the 30-day plan's
-// Week 4 stretch-item framing for this feature): one child process
-// backing one outpost run invocation doesn't need concurrent in-flight
-// request support to be useful, and correlating by id to support that
-// safely is a real, separate piece of work.
+// Calls are serialized with a mutex rather than pipelined — a deliberate
+// "first cut" simplification (see the 30-day plan's Week 4 stretch-item
+// framing for this feature): one child process backing one outpost run
+// invocation doesn't need concurrent in-flight requests to be useful.
 //
-// Known limitation, documented rather than silently accepted: Call skips
-// reading a response for a notification (correct per JSON-RPC 2.0 — a
-// spec-compliant server never sends one). A non-compliant or actively
-// hostile child that responds to a notification anyway would leave a
-// stray line buffered, which the next real Call would then misread as
-// its own response. Not defended against — the child process being
-// wrapped is real, untrusted input (matching this product's own threat
-// model), but full desync recovery is out of scope for this first cut.
+// Call does correlate each response to the request that produced it by
+// JSON-RPC id (a Claude Security scan finding, fixed 2026-07-23) — a
+// mismatch is rejected as a protocol error rather than handed back as
+// the answer. Call also still skips reading a response for a
+// notification (correct per JSON-RPC 2.0 — a spec-compliant server
+// never sends one). A non-compliant or actively hostile child that
+// responds to a notification anyway leaves a stray line buffered; the
+// id check stops that stray line from being trusted as a later call's
+// real answer, but the underlying desync — the child's genuine next
+// response is now one line further down the stream — isn't itself
+// repaired here. The child process being wrapped is real, untrusted
+// input (matching this product's own threat model); full self-healing
+// resync is a separate, larger piece of work than closing off the
+// "wrong answer accepted as right" failure mode this fixes.
 package stdioupstream
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -90,6 +95,15 @@ func (c *Caller) Call(_ context.Context, _ mcp.ProtocolVersion, req *mcp.Request
 	var resp mcp.Response
 	if err := json.Unmarshal(c.reader.Bytes(), &resp); err != nil {
 		return nil, fmt.Errorf("stdioupstream: decode child response: %w", err)
+	}
+	// Correlate by JSON-RPC id rather than trusting read order. Without
+	// this, a stray line the child wrote for something else — most
+	// plausibly a response to a notification, which per spec it should
+	// never send and this Caller never reads — gets picked up by
+	// whichever unrelated Call() scans next and returned as if it were
+	// that call's genuine answer.
+	if !bytes.Equal(resp.ID, req.ID) {
+		return nil, fmt.Errorf("stdioupstream: response id %s does not match request id %s (child stdio desynced or sent an unsolicited response)", resp.ID, req.ID)
 	}
 	return &resp, nil
 }

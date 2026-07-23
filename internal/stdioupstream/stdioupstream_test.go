@@ -152,3 +152,31 @@ func TestCallReturnsErrorOnMalformedChildResponse(t *testing.T) {
 		t.Fatal("expected an error when the child sends a non-JSON response")
 	}
 }
+
+// TestCallRejectsResponseWithMismatchedID guards against Claude
+// Security findings F3/F4/F18: Call used to trust whatever line it read
+// next as the answer to the request it just sent, with no check that
+// the response's JSON-RPC id actually matched. A hostile child planting
+// a forged response (e.g. one sent for a notification the caller never
+// reads, landing on the next unrelated call) could have its fabricated
+// content returned as if it were genuine — corrupting the breaker's
+// success/failure accounting downstream, among other things. The fix
+// must surface this as a clear protocol error, never silently hand back
+// the mismatched content.
+func TestCallRejectsResponseWithMismatchedID(t *testing.T) {
+	bin := buildHostileFixture(t)
+	c, err := New(bin, "-wrongid")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "tools/call"}
+	resp, err := c.Call(context.Background(), mcp.VersionCurrent, req, "")
+	if err == nil {
+		t.Fatalf("expected an error for a response id mismatch, got a response: %+v", resp)
+	}
+	if resp != nil {
+		t.Fatalf("resp = %+v, want nil — a mismatched response must never be handed back as the answer", resp)
+	}
+}
