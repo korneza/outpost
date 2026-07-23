@@ -35,8 +35,26 @@ type Client struct {
 // NewClient returns a Client targeting baseURL.
 func NewClient(baseURL string) *Client {
 	return &Client{
-		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			// The configured upstream is exactly the kind of actor this
+			// package's threat model treats as potentially malicious or
+			// compromised. Go's default redirect policy would otherwise
+			// follow up to 10 hops to wherever a 3xx response points —
+			// including an internal-only address (a cloud metadata
+			// endpoint, an internal admin URL) — making Outpost itself
+			// issue that request (Claude Security finding F17). Outpost
+			// always talks to one fixed, operator-configured upstream
+			// URL per route; there's no legitimate reason for it to
+			// ever redirect, so refuse outright rather than maintain an
+			// allowlist. ErrUseLastResponse returns the 3xx response
+			// itself instead of following it — Call's existing
+			// non-200-status check below turns that into an error.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 

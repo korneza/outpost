@@ -199,3 +199,38 @@ func TestCallOmitsAuthorizationHeaderWhenAbsent(t *testing.T) {
 		t.Fatal("Authorization header present on the outgoing request when the client sent none")
 	}
 }
+
+// TestCallDoesNotFollowRedirects guards against Claude Security finding
+// F17: the http.Client had no CheckRedirect override, so Go's default
+// policy (follow up to 10 redirects) applied to the configured
+// upstream — an actor this package's own doc comment treats as
+// potentially malicious or compromised. A compromised upstream
+// returning a 3xx to an internal-only address (a cloud metadata
+// endpoint, an internal admin URL) would otherwise make Outpost itself
+// issue that follow-up request. Outpost always talks to one fixed,
+// operator-configured upstream URL per route — there is no legitimate
+// reason for that single destination to ever redirect somewhere else,
+// so the fix is an outright refusal, not an allowlist to maintain.
+func TestCallDoesNotFollowRedirects(t *testing.T) {
+	var redirectTargetHit bool
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetHit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":"you should never see this"}}`))
+	}))
+	defer redirectTarget.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: mcp.MethodToolsList}
+	if _, err := client.Call(context.Background(), mcp.VersionCurrent, req, ""); err == nil {
+		t.Fatal("expected an error for a 3xx response, since the client must not follow it")
+	}
+	if redirectTargetHit {
+		t.Fatal("the redirect target was reached — Call must not follow a redirect from the configured upstream")
+	}
+}
