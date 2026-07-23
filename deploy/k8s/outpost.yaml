@@ -41,13 +41,13 @@ spec:
     spec:
       containers:
         - name: outpost
-          # Pin to a real release tag once one exists (goreleaser +
-          # .goreleaser.yaml's dockers block build/push this on release —
-          # hasn't happened yet, see the README in this directory). Never
-          # ship :latest in a manifest meant to be copied as a starting
-          # point — it's a mutable-tag supply-chain risk: the same tag
-          # can point at different, unaudited image content over time.
-          image: ghcr.io/korneza/outpost:v0.9.0
+          # Pins to the v0.9.0-alpha release image (goreleaser's dockers
+          # block builds/pushes this on tag push). Never ship :latest in
+          # a manifest meant to be copied as a starting point — it's a
+          # mutable-tag supply-chain risk: the same tag can point at
+          # different, unaudited image content over time. Bump this to
+          # match whatever you actually deploy.
+          image: ghcr.io/korneza/outpost:v0.9.0-alpha
           args: ["serve", "-config", "/etc/outpost/outpost.yaml"]
           ports:
             - containerPort: 8080
