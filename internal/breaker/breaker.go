@@ -21,8 +21,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/korneza/outpost/internal/boundedset"
 	"github.com/korneza/outpost/internal/store"
 )
+
+// maxTrackedTools bounds how many distinct (upstream, tool) pairs the
+// breaker keeps state for at once. tool is client-supplied with no
+// validation of its own by this package, so without a cap an attacker
+// sending a fresh fabricated tool name on every request could grow
+// b.tools without bound (Claude Security finding F9). 10,000 is
+// generous headroom for any real deployment's actual tool count, not a
+// tight operational budget.
+const maxTrackedTools = 10_000
 
 // Clock abstracts time so cooldown behavior is testable without real sleeps.
 type Clock interface {
@@ -58,17 +68,19 @@ type Breaker struct {
 	cfg   Config
 	clock Clock
 
-	mu    sync.Mutex
-	tools map[string]*toolState
+	mu      sync.Mutex
+	tools   map[string]*toolState
+	tracked *boundedset.Tracker
 }
 
 // New returns a Breaker backed by st for transition persistence.
 func New(st *store.Store, cfg Config) *Breaker {
 	return &Breaker{
-		store: st,
-		cfg:   cfg,
-		clock: realClock{},
-		tools: make(map[string]*toolState),
+		store:   st,
+		cfg:     cfg,
+		clock:   realClock{},
+		tools:   make(map[string]*toolState),
+		tracked: boundedset.New(maxTrackedTools),
 	}
 }
 
@@ -106,10 +118,14 @@ func (b *Breaker) Allow(upstream, tool string) bool {
 // never changes the in-memory state Allow reads from.
 func (b *Breaker) RecordResult(ctx context.Context, upstream, tool string, success bool) error {
 	b.mu.Lock()
-	ts, ok := b.tools[key(upstream, tool)]
+	k := key(upstream, tool)
+	ts, ok := b.tools[k]
 	if !ok {
 		ts = &toolState{state: "closed"}
-		b.tools[key(upstream, tool)] = ts
+		b.tools[k] = ts
+		if evict, evicted := b.tracked.Add(k); evicted {
+			delete(b.tools, evict)
+		}
 	}
 
 	transitioned := false

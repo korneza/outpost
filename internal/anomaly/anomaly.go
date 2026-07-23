@@ -9,11 +9,23 @@ package anomaly
 import (
 	"math"
 	"sync"
+
+	"github.com/korneza/outpost/internal/boundedset"
 )
 
 const (
 	minSamplesForDetection = 20
 	stdDevThreshold        = 3.0
+
+	// maxTrackedStats bounds how many distinct (upstream, tool, metric)
+	// stat entries the detector keeps at once. tool is client-supplied
+	// with no validation of its own by this package, so without a cap
+	// an attacker sending a fresh fabricated tool name on every request
+	// could grow d.stats without bound (Claude Security finding F10) —
+	// two entries per distinct tool name (latency_ms, error_rate).
+	// Generous headroom for any real deployment's actual tool count,
+	// not a tight operational budget.
+	maxTrackedStats = 20_000
 )
 
 // Anomaly reports a single call whose latency or error outcome deviated
@@ -52,13 +64,14 @@ func (s *runningStat) update(x float64) {
 // Detector tracks per-(upstream, tool, metric) running statistics. A
 // Detector is safe for concurrent use.
 type Detector struct {
-	mu    sync.Mutex
-	stats map[string]*runningStat
+	mu      sync.Mutex
+	stats   map[string]*runningStat
+	tracked *boundedset.Tracker
 }
 
 // New returns an empty Detector.
 func New() *Detector {
-	return &Detector{stats: make(map[string]*runningStat)}
+	return &Detector{stats: make(map[string]*runningStat), tracked: boundedset.New(maxTrackedStats)}
 }
 
 func statKey(upstream, tool, metric string) string {
@@ -92,6 +105,9 @@ func (d *Detector) observeMetric(upstream, tool, metric string, value float64) *
 	if !ok {
 		s = &runningStat{}
 		d.stats[k] = s
+		if evict, evicted := d.tracked.Add(k); evicted {
+			delete(d.stats, evict)
+		}
 	}
 
 	var anomaly *Anomaly

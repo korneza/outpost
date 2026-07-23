@@ -81,3 +81,22 @@ func TestMetricsArePerToolAndPerUpstream(t *testing.T) {
 		t.Fatalf("anomalies = %v, want none for the same tool name on a different upstream", anomalies)
 	}
 }
+
+// TestTrackedStatCountIsBounded guards against Claude Security finding
+// F10: tool is client-supplied with no cardinality validation upstream
+// of Observe, and each distinct (upstream, tool, metric) key creates a
+// permanent stats entry with no eviction — an attacker sending a fresh
+// fabricated tool name per request could grow d.stats without bound
+// (two entries per distinct tool name: latency_ms and error_rate).
+func TestTrackedStatCountIsBounded(t *testing.T) {
+	d := New()
+	for i := 0; i < maxTrackedStats+500; i++ {
+		d.Observe("files", "tool-"+string(rune(i)), 10, false)
+	}
+	d.mu.Lock()
+	n := len(d.stats)
+	d.mu.Unlock()
+	if n > maxTrackedStats {
+		t.Fatalf("tracked stat count = %d, want capped at %d", n, maxTrackedStats)
+	}
+}

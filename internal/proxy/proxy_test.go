@@ -230,6 +230,43 @@ func TestProxyRejectsInvalidToolCallWithoutReachingUpstream(t *testing.T) {
 	}
 }
 
+// TestProxyRejectsOversizedToolNameBeforeTrackingIt guards against
+// Claude Security findings F9/F10/F14: an unbounded, client-supplied
+// tool name used to reach the circuit breaker, anomaly detector, and
+// SQLite breaker_state — each keyed by the raw name string with no
+// length check — letting a caller grow all three without bound by
+// sending fabricated tool names. T1 alone doesn't stop this: it
+// fail-opens for tools it has never learned a schema for, and an
+// attacker's fabricated name is by definition never learned. The
+// rejection has to happen earlier, before breaker/anomaly/pinning ever
+// see the name.
+func TestProxyRejectsOversizedToolNameBeforeTrackingIt(t *testing.T) {
+	var upstreamReached bool
+	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
+		upstreamReached = true
+		return mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":"should not be reached"}`)}
+	})
+	defer up.Close()
+
+	handler, _ := newTestProxy(t, up.URL)
+	oversized := strings.Repeat("a", 100_000)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + oversized + `","arguments":{}}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/files", strings.NewReader(body))
+	handler.ServeHTTP(rec, req)
+
+	var resp mcp.Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != mcp.InvalidParams {
+		t.Fatalf("Error = %+v, want code %d (InvalidParams) for an oversized tool name", resp.Error, mcp.InvalidParams)
+	}
+	if upstreamReached {
+		t.Fatal("upstream saw the call — an oversized tool name must be rejected before forwarding, breaker tracking, or anomaly tracking")
+	}
+}
+
 func TestProxyForwardsValidToolCallAfterLearningSchema(t *testing.T) {
 	up := fakeUpstream(t, func(req mcp.Request) mcp.Response {
 		if req.Method == mcp.MethodToolsList {

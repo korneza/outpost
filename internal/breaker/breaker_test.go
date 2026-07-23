@@ -123,6 +123,25 @@ func TestBreakerStateIsPerToolNotGlobal(t *testing.T) {
 	}
 }
 
+// TestTrackedToolCountIsBounded guards against Claude Security finding
+// F9: tool is client-supplied with no length or cardinality validation
+// upstream of RecordResult, and every distinct string used to create a
+// permanent map entry with no eviction — an attacker sending a fresh
+// fabricated tool name per request could grow b.tools without bound.
+func TestTrackedToolCountIsBounded(t *testing.T) {
+	b, _ := newTestBreaker(t, DefaultConfig())
+	ctx := context.Background()
+	for i := 0; i < maxTrackedTools+500; i++ {
+		_ = b.RecordResult(ctx, "files", "tool-"+string(rune(i)), true)
+	}
+	b.mu.Lock()
+	n := len(b.tools)
+	b.mu.Unlock()
+	if n > maxTrackedTools {
+		t.Fatalf("tracked tool count = %d, want capped at %d", n, maxTrackedTools)
+	}
+}
+
 func TestStateTransitionsArePersisted(t *testing.T) {
 	st, err := store.Open(":memory:")
 	if err != nil {

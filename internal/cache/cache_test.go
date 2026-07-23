@@ -84,3 +84,23 @@ func TestKeySameForRepeatedCallerIdentity(t *testing.T) {
 		t.Fatal("identical caller + method + upstream + params must still produce the same key")
 	}
 }
+
+// TestEntryCountIsBounded guards against Claude Security finding F11:
+// Key hashes attacker-controlled params with no size cap, Set never
+// evicts, and Get only checks expiry on read rather than actively
+// purging — so an attacker sending many resources/read requests with
+// distinct params could grow the cache's entry count without bound,
+// an effect that outlives the TTL since nothing ever sweeps it.
+func TestEntryCountIsBounded(t *testing.T) {
+	c := New(time.Minute)
+	for i := 0; i < maxEntries+500; i++ {
+		key, _ := c.Key(mcp.MethodResourcesRead, "up1", []byte(string(rune(i))), "")
+		c.Set(key, []byte(`{}`))
+	}
+	c.mu.Lock()
+	n := len(c.m)
+	c.mu.Unlock()
+	if n > maxEntries {
+		t.Fatalf("entry count = %d, want capped at %d", n, maxEntries)
+	}
+}

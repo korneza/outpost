@@ -30,6 +30,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// maxToolNameLength bounds how long a tools/call params.name Outpost will
+// track anywhere — the circuit breaker, anomaly detector, and pinning/
+// store all key persistent or in-memory state on this client-supplied
+// string. A real tool name is a short identifier (a few dozen bytes at
+// most); 256 is generous headroom, not a working limit.
+const maxToolNameLength = 256
+
 // caller is the minimal interface upstreamHandler needs from whatever it
 // forwards calls to. *upstream.Client satisfies it today (HTTP);
 // *stdioupstream.Caller (see internal/stdioupstream) satisfies it too, for
@@ -177,6 +184,16 @@ func (h *upstreamHandler) handle(ctx context.Context, body []byte, authHeader, p
 	tool := mcp.ToolName(&req)
 
 	if req.Method == mcp.MethodToolsCall {
+		// Reject an oversized tool name before it reaches anything that
+		// tracks it by name — the circuit breaker, anomaly detector, and
+		// pinning/store all key their state on this string with no
+		// length bound of their own. T1 doesn't cover this case either:
+		// it fail-opens for a tool it has never learned a schema for,
+		// and a caller-fabricated name is by definition never learned.
+		if len(tool) > maxToolNameLength {
+			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("tool name exceeds %d bytes", maxToolNameLength))
+			return mcp.NewErrorResponse(req.ID, mcp.InvalidParams, fmt.Sprintf("tool name exceeds the %d byte limit", maxToolNameLength))
+		}
 		if !h.breaker.Allow(h.name, tool) {
 			logging.LogCall(h.logger, h.name, req.Method, tool, 0, fmt.Errorf("circuit breaker open"))
 			return mcp.NewErrorResponse(req.ID, mcp.CircuitOpen, "circuit breaker open for this tool")

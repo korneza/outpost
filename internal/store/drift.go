@@ -6,6 +6,26 @@ import (
 	"time"
 )
 
+// maxDriftEvents bounds the total row count of drift_events. RecordDrift
+// fires on every hash mismatch pinning.LearnFromToolsList sees — a
+// source this codebase's own threat model treats as potentially
+// malicious ("tool poisoning") — with no rate limit of its own, so a
+// compromised upstream flapping a tool's definition between two variants
+// on successive tools/list responses could otherwise grow this table
+// without bound (Claude Security finding F22). It's a package var, not
+// a const, only so tests can shrink it instead of running tens of
+// thousands of real inserts.
+//
+// The tradeoff: once the cap is hit, the oldest events are pruned,
+// oldest first, globally rather than per-tool. ListDriftedTools (used
+// to rebuild in-memory block state after a restart) only needs at least
+// one surviving row per drifted (upstream, tool) pair, so pruning is
+// safe for that purpose unless a single tool's own history is old
+// enough, and the table busy enough, to be pruned out entirely — the
+// same bounded-storage tradeoff as the in-memory LRU caps elsewhere in
+// this codebase (internal/breaker, internal/anomaly, internal/cache).
+var maxDriftEvents = 100_000
+
 // DriftEvent records one observed change in a tool definition's hash.
 type DriftEvent struct {
 	ID         int64
@@ -16,8 +36,9 @@ type DriftEvent struct {
 	DetectedAt time.Time
 }
 
-// RecordDrift appends a drift event. The log is append-only — drift history
-// is never edited or deleted.
+// RecordDrift appends a drift event, then prunes the oldest rows beyond
+// maxDriftEvents if this insertion pushed the table over the cap. Drift
+// history is otherwise never edited or deleted.
 func (s *Store) RecordDrift(ctx context.Context, ev DriftEvent) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO drift_events (upstream, tool_name, old_hash, new_hash, detected_at)
@@ -25,6 +46,13 @@ func (s *Store) RecordDrift(ctx context.Context, ev DriftEvent) error {
 	`, ev.Upstream, ev.ToolName, ev.OldHash, ev.NewHash, ev.DetectedAt.Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("store: record drift: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM drift_events WHERE id NOT IN (
+			SELECT id FROM drift_events ORDER BY id DESC LIMIT ?
+		)
+	`, maxDriftEvents); err != nil {
+		return fmt.Errorf("store: prune drift_events: %w", err)
 	}
 	return nil
 }

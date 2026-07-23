@@ -94,3 +94,35 @@ func TestListDriftedToolsEmptyWhenNoDrift(t *testing.T) {
 		t.Fatalf("len(tools) = %d, want 0", len(tools))
 	}
 }
+
+// TestDriftEventRowCountIsBounded guards against Claude Security
+// finding F22: RecordDrift is append-only with no cap, called on every
+// hash mismatch a pinning.LearnFromToolsList sees — a compromised
+// upstream flapping a tool's definition between two variants on
+// successive tools/list responses could grow drift_events without
+// bound. The cap is a package var here specifically so the test doesn't
+// need tens of thousands of real inserts to prove the bound holds.
+func TestDriftEventRowCountIsBounded(t *testing.T) {
+	s := openTestStore(t)
+	orig := maxDriftEvents
+	maxDriftEvents = 10
+	t.Cleanup(func() { maxDriftEvents = orig })
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 25; i++ {
+		if err := s.RecordDrift(ctx, DriftEvent{
+			Upstream: "files", ToolName: "files.read", OldHash: "a", NewHash: "b", DetectedAt: now,
+		}); err != nil {
+			t.Fatalf("RecordDrift %d: %v", i, err)
+		}
+	}
+
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM drift_events`).Scan(&count); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if count > 10 {
+		t.Fatalf("drift_events row count = %d, want capped at 10", count)
+	}
+}
