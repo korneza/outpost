@@ -126,7 +126,7 @@ func TestCallRejectsOversizedResponseBody(t *testing.T) {
 	maxResponseBytes = 100
 	t.Cleanup(func() { maxResponseBytes = orig })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"` + strings.Repeat("a", 1000) + `"}`))
 	}))
@@ -146,7 +146,7 @@ func TestCallAcceptsResponseAtCap(t *testing.T) {
 	maxResponseBytes = 1000
 	t.Cleanup(func() { maxResponseBytes = orig })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		prefix := `{"jsonrpc":"2.0","id":1,"result":"`
 		suffix := `"}`
 		padding := int(maxResponseBytes) - len(prefix) - len(suffix)
@@ -213,7 +213,7 @@ func TestCallOmitsAuthorizationHeaderWhenAbsent(t *testing.T) {
 // so the fix is an outright refusal, not an allowlist to maintain.
 func TestCallDoesNotFollowRedirects(t *testing.T) {
 	var redirectTargetHit bool
-	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		redirectTargetHit = true
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":"you should never see this"}}`))
