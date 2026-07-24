@@ -153,6 +153,48 @@ func TestCallReturnsErrorOnMalformedChildResponse(t *testing.T) {
 	}
 }
 
+// TestCallReadsResponseLineLargerThan64KB guards against Claude
+// Security finding F6: c.reader was built with bufio.NewScanner(stdout)
+// and never had Scanner.Buffer() called to raise the default 64KB max
+// token size, even though the untrusted child's response line is read
+// straight from it. bufio.Scanner's error state is sticky once a line
+// exceeds the max token size (bufio.ErrTooLong), so one oversized line
+// — plausible for a real tools/call result embedding a modest file —
+// would have permanently broken every subsequent call for the rest of
+// the process's life, not just the offending one.
+func TestCallReadsResponseLineLargerThan64KB(t *testing.T) {
+	bin := buildFixture(t)
+	// 100KB of padding comfortably exceeds bufio.Scanner's 64KB default
+	// (bufio.MaxScanTokenSize) while staying well under the raised
+	// buffer this fix sets.
+	c, err := New(bin, "-bigline=100000")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	req := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "tools/call"}
+	resp, err := c.Call(context.Background(), mcp.VersionCurrent, req, "")
+	if err != nil {
+		t.Fatalf("Call: %v, want a response over 64KB to be read successfully", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(result["padding"]) != 100000 {
+		t.Fatalf("padding length = %d, want 100000 (the full oversized line, not truncated)", len(result["padding"]))
+	}
+
+	// The call after an oversized line must still work — proving this
+	// isn't just "big enough for one line" but a real, sustained fix,
+	// not a scanner left in a permanently broken state.
+	req2 := &mcp.Request{JSONRPC: "2.0", ID: json.RawMessage(`2`), Method: "tools/call"}
+	if _, err := c.Call(context.Background(), mcp.VersionCurrent, req2, ""); err != nil {
+		t.Fatalf("Call after an oversized line: %v, want the session to still be usable", err)
+	}
+}
+
 // TestNewDoesNotLeakParentEnvironmentToChild guards against Claude
 // Security finding F7: exec.Command left Cmd.Env nil, so the spawned
 // child inherited every environment variable of the outpost process

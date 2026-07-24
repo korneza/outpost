@@ -2,6 +2,7 @@ package breaker
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,6 +106,44 @@ func TestHalfOpenReopensOnTrialFailure(t *testing.T) {
 	clock.advance(11 * time.Second)
 	if !b.Allow("files", "files.read") {
 		t.Fatal("Allow: want true — cooldown restarted after the failed trial, and it has now elapsed again")
+	}
+}
+
+// TestHalfOpenGrantsExactlyOneConcurrentTrial guards against Claude
+// Security finding F21: Allow's half-open branch returned true for
+// every caller once a tool was half-open, with nothing limiting the
+// decision to a single in-flight trial call as the package doc implies
+// — RecordResult only flips state after a call completes, so a burst
+// of concurrent requests arriving right as the breaker transitions to
+// half-open could all pass Allow() and hit the recovering upstream at
+// once, defeating the breaker's one-trial-at-a-time recovery gate.
+func TestHalfOpenGrantsExactlyOneConcurrentTrial(t *testing.T) {
+	b, clock := newTestBreaker(t, Config{ConsecutiveFailureThreshold: 1, CooldownPeriod: 10 * time.Second})
+	ctx := context.Background()
+	_ = b.RecordResult(ctx, "files", "files.read", false) // trips open
+	clock.advance(11 * time.Second)                       // cooldown elapsed
+
+	const concurrency = 50
+	allowed := make(chan bool, concurrency)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			allowed <- b.Allow("files", "files.read")
+		}()
+	}
+	wg.Wait()
+	close(allowed)
+
+	trueCount := 0
+	for a := range allowed {
+		if a {
+			trueCount++
+		}
+	}
+	if trueCount != 1 {
+		t.Fatalf("Allow returned true for %d of %d concurrent callers, want exactly 1 — only a single trial call may reach a recovering upstream at a time", trueCount, concurrency)
 	}
 }
 

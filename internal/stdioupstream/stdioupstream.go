@@ -89,8 +89,25 @@ func New(command string, args ...string) (*Caller, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("stdioupstream: start %s: %w", command, err)
 	}
-	return &Caller{cmd: cmd, stdin: stdin, reader: bufio.NewScanner(stdout)}, nil
+	reader := bufio.NewScanner(stdout)
+	// bufio.Scanner defaults to a 64KB max token size (Claude Security
+	// finding F6). The untrusted child's response line is read straight
+	// from this scanner, and a real tools/call result — one embedding a
+	// modest file or image, say — can plausibly exceed that. Worse,
+	// Scanner's error state is sticky once a line is too long: every
+	// later Scan() call keeps returning the same error, permanently
+	// breaking the whole session on one oversized line rather than just
+	// failing that one call. maxResponseLineBytes gives real headroom
+	// instead.
+	reader.Buffer(make([]byte, 0, 64*1024), maxResponseLineBytes)
+	return &Caller{cmd: cmd, stdin: stdin, reader: reader}, nil
 }
+
+// maxResponseLineBytes bounds the largest single stdio response line
+// Call will accept, matching internal/upstream.Client's HTTP response
+// cap so both transports treat "how big can one real tool-call result
+// be" consistently.
+const maxResponseLineBytes = 10 << 20
 
 // Call writes req as one newline-delimited JSON line to the child's
 // stdin and reads the matching response line from its stdout. version

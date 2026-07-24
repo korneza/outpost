@@ -91,8 +91,10 @@ func key(upstream, tool string) string {
 // Allow reports whether a tools/call to (upstream, tool) may proceed. A
 // closed or unknown tool is always allowed. An open tool is allowed only
 // once the cooldown has elapsed, at which point the breaker transitions to
-// half-open and this call is the trial. A half-open tool is allowed (the
-// trial in flight).
+// half-open and this call is the trial. Exactly one trial call is allowed
+// per half-open period — a caller arriving while a trial is already in
+// flight (state already half_open, not transitioning to it) is refused,
+// not let through alongside it, until RecordResult resolves the trial.
 func (b *Breaker) Allow(upstream, tool string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -102,13 +104,22 @@ func (b *Breaker) Allow(upstream, tool string) bool {
 		return true
 	}
 	if ts.state == "half_open" {
-		return true
+		// A trial is already in flight (or already ran and hasn't been
+		// resolved by RecordResult yet). b.mu is held for this entire
+		// call, so the one goroutine that performs the open->half_open
+		// transition below is the only one that can ever observe that
+		// transition and get the trial — every other concurrent or
+		// later caller lands here instead (Claude Security finding F21:
+		// this branch used to unconditionally return true, letting a
+		// burst of concurrent callers all reach the recovering upstream
+		// at once).
+		return false
 	}
 	// state == "open"
 	if b.clock.Now().Sub(ts.openedAt) >= b.cfg.CooldownPeriod {
 		ts.state = "half_open"
 		b.persist(upstream, tool, ts)
-		return true
+		return true // this caller is granted the single trial
 	}
 	return false
 }

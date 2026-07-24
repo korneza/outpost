@@ -1,12 +1,20 @@
 // Command fixture is a minimal newline-delimited JSON-RPC echo server used
 // only by internal/stdioupstream's tests as a stand-in child process.
+//
+// "-bigline=<n>" makes every response include an n-byte padding field —
+// used to prove Caller.Call can read a single response line larger than
+// bufio.Scanner's 64KB default token size, a real size a legitimate
+// tools/call result (e.g. one embedding a modest file) can plausibly
+// reach.
 package main
 
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
+	"strings"
 )
 
 type request struct {
@@ -16,6 +24,9 @@ type request struct {
 }
 
 func main() {
+	bigLine := flag.Int("bigline", 0, "pad every response with this many extra bytes")
+	flag.Parse()
+
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		var req request
@@ -39,6 +50,7 @@ func main() {
 			"result": map[string]string{
 				"content":    "fixture response for " + req.Method,
 				"env_secret": os.Getenv("OUTPOST_TEST_SECRET"),
+				"padding":    strings.Repeat("a", *bigLine),
 			},
 		}
 		out, _ := json.Marshal(resp)
